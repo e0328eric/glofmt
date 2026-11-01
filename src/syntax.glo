@@ -30,6 +30,8 @@
         type_array: bool;
         cast_type: bool;
         block: bool;
+        // Visibility-only groups share the surrounding indentation.
+        visibility_group: bool;
         multiline: bool;
         hardline: bool;
         flat_width: ssize;

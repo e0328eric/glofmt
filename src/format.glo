@@ -15,6 +15,7 @@ Fmt_Writer :: struct {
     column: ssize;
     line_start: bool = true;
     pending: bool;
+    blank_pending: bool;
     continuation: bool;
     control_header: bool;
     disabled_start: ssize = -1;
@@ -259,6 +260,17 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
     }
 }
 
+fmt_visibility_group :: (tokens: []Fmt_Token, open: ssize) -> bool {
+    at := fmt_previous_code(tokens, open - 1);
+    // Skip audience arguments and modifier chains already identified by spacing.
+    if at >= 0 && tokens[at].text == ")" at = fmt_previous_code(tokens, tokens[at].pair - 1);
+    while at >= 0 && tokens[at].directive_modifier at = fmt_previous_code(tokens, at - 1);
+    if at < 0 || (tokens[at].text != "#public" && tokens[at].text != "#private") return false;
+    // T ::: #public { ... } is an inherent method block, which adds a scope.
+    before := fmt_previous_code(tokens, at - 1);
+    return before < 0 || tokens[before].text != ":::";
+}
+
 // Trailing commas and comments request vertical lists (zig fmt); a width
 // budget also expands long lists (rustfmt). Measurements are bottom-up.
 fmt_measure :: (tokens: *[..]Fmt_Token) {
@@ -271,6 +283,7 @@ fmt_measure :: (tokens: *[..]Fmt_Token) {
             "\n"
         );
         if !fmt_open(token.text) continue;
+        if token.block token.visibility_group = fmt_visibility_group(tokens.view(), i);
         end := token.pair;
         if token.block && end > i + 1 token.hardline = true;
         last := fmt_previous_code(tokens.view(), end - 1);
@@ -318,8 +331,11 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             }
             if open.arm_body writer.depth -= 1;
             if open.multiline {
-                writer.depth -= 1;
-                fmt_newline(&writer);
+                if open.visibility_group fmt_blank_line(&writer);
+                else {
+                    writer.depth -= 1;
+                    fmt_newline(&writer);
+                }
             }
         }
         next_code := fmt_next_code(tokens.view(), i + 1);
@@ -333,7 +349,10 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             parent.arm_header = true;
             fmt_newline(&writer);
         }
-        if writer.pending && !trailing_comment fmt_newline(&writer);
+        if writer.blank_pending && !trailing_comment {
+            fmt_blank_line(&writer);
+            writer.blank_pending = false;
+        } else if writer.pending && !trailing_comment fmt_newline(&writer);
         if i > 0 && lines > 0 {
             prev := &tokens.*[i - 1];
             if in_block && !comment && !fmt_close(text) && text != "{" && text != "else" {
@@ -376,7 +395,9 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
                 )
             );
             if token.multiline {
-                writer.depth += 1;
+                // Delay the blank line until after any opening-line comments.
+                if token.visibility_group writer.blank_pending = true;
+                else writer.depth += 1;
                 writer.pending = true;
             }
         } else if text == ";" {

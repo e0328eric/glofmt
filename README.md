@@ -102,6 +102,12 @@ use `Point.{ .x = 1, .y = 2 }`. Trailing comments stay with their statement;
 up to one blank line between statements or comments is retained. Generated
 line breaks use LF.
 
+Visibility groups (`#public { ... }` and `#private { ... }`, including public
+audience modifiers) keep their contents at the surrounding indentation level,
+with one blank line just inside each brace. Nested declarations still indent
+normally, and empty groups stay `{}`. Inherent method blocks such as
+`T ::: #public { ... }` indent their methods normally.
+
 Use `// glofmt: off` and `// glofmt: on` to preserve manual formatting:
 
 ```glosso

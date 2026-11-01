@@ -139,6 +139,111 @@ class Formatter(unittest.TestCase):
             "'+' :: (a: T, b: T) -> T #operator(left, 18) {}\n",
         )
 
+    def test_visibility_groups(self):
+        for directive in ['#public', '#private', '#public,unit', '#public,to("Friend","Other")']:
+            with self.subTest(directive=directive):
+                self.assert_format(
+                    directive + '{VGA_BUFFER_WIDTH::80;\n\n'
+                    '// One explicit byte for the two colors.\n'
+                    'VgaColor::struct #packed{bits:u8;}\n\n'
+                    'VgaChar::struct #c_call{char:u8;color:VgaColor;}'
+                    '} // END visibility\nafter::1;',
+                    directive.replace('"Friend","Other"', '"Friend", "Other"') + ' {\n\n'
+                    'VGA_BUFFER_WIDTH :: 80;\n\n'
+                    '// One explicit byte for the two colors.\n'
+                    'VgaColor :: struct #packed {\n    bits: u8;\n}\n\n'
+                    'VgaChar :: struct #c_call {\n    char: u8;\n    color: VgaColor;\n}\n\n'
+                    '} // END visibility\nafter :: 1;\n',
+                )
+
+    def test_nested_visibility_groups_and_indentation(self):
+        source = ('#public{Container::struct{before:u8;'
+                  '#private{hidden:u8;#public{shown:u8;}tail:u8;}'
+                  'after:u8;}run::(){f(a,b,);}}outside::1;')
+        expected = '''\
+#public {
+
+Container :: struct {
+    before: u8;
+    #private {
+
+    hidden: u8;
+    #public {
+
+    shown: u8;
+
+    }
+    tail: u8;
+
+    }
+    after: u8;
+}
+run :: () {
+    f(
+        a,
+        b,
+    );
+}
+
+}
+outside :: 1;
+'''
+        for options, indent in [((), '    '), (('--indent=2',), '  '), (('--tabs',), '\t')]:
+            with self.subTest(options=options):
+                self.assert_format(source, expected.replace('    ', indent), *options)
+
+    def test_visibility_group_comments_and_empty_groups(self):
+        self.assert_format(
+            '#public /* audience */, /* unit */ unit /* group */ { // API\n\n\n'
+            '/// docs\nvalue::1; // trailing\n\n\n} // END #public\n'
+            '#private{/* comment only */}\n#public{\n\n}\n#private{}',
+            '#public /* audience */, /* unit */ unit /* group */ { // API\n\n'
+            '/// docs\nvalue :: 1; // trailing\n\n} // END #public\n'
+            '#private { /* comment only */\n\n}\n#public {}\n#private {}\n',
+        )
+        self.assert_format(
+            '#public,to(/* friend */ "Friend","Other"){value::1;}',
+            '#public,to( /* friend */ "Friend", "Other") {\n\nvalue :: 1;\n\n}\n',
+        )
+
+    def test_visibility_prefixes_keep_declaration_bodies_indented(self):
+        self.assert_format(
+            '#public Thing::struct{value:u8;}#private run::(){work();}'
+            'Thing:::#public,unit{value::(#self)->u8{return #self.value;}}'
+            '$T:::#public where Show(T){show::(#self){work();}}',
+            '''
+            #public Thing :: struct {
+                value: u8;
+            }
+            #private run :: () {
+                work();
+            }
+            Thing ::: #public,unit {
+                value :: (#self) -> u8 {
+                    return #self.value;
+                }
+            }
+            $T ::: #public where Show(T) {
+                show :: (#self) {
+                    work();
+                }
+            }
+            ''',
+        )
+
+    def test_visibility_groups_respect_width(self):
+        self.assert_format(
+            '#public{value::combine(first_argument,second_argument);}',
+            '#public {\n\nvalue :: combine(first_argument, second_argument);\n\n}\n',
+            '--width=50',
+        )
+        self.assert_format(
+            '#public,to("Friend","Other"){value::combine(first_argument,second_argument);}',
+            '#public,to(\n    "Friend",\n    "Other"\n) {\n\n'
+            'value :: combine(\n    first_argument,\n    second_argument\n);\n\n}\n',
+            '--width=20',
+        )
+
     def test_cast_prefix_operands(self):
         self.assert_format(
             'function:=cast(Generated_Function)&code;#assert cast(usize)&code%64==0;',
@@ -321,22 +426,24 @@ class Formatter(unittest.TestCase):
             [] * $ T:::#public{first::(#self)->*T{return #self[0];}}
         }''', '''
             #public {
-                Source :: typeclass(T: type) {}
-                []const u8 ::: instance Source {
-                    view :: (source: []const u8) -> []const u8 {
-                        return source;
-                    }
+
+            Source :: typeclass(T: type) {}
+            []const u8 ::: instance Source {
+                view :: (source: []const u8) -> []const u8 {
+                    return source;
                 }
-                *const [..]u8 ::: instance Source {
-                    view :: (source: *const [..]u8) -> []const u8 {
-                        return source.*.view();
-                    }
+            }
+            *const [..]u8 ::: instance Source {
+                view :: (source: *const [..]u8) -> []const u8 {
+                    return source.*.view();
                 }
-                []*$T ::: #public {
-                    first :: (#self) -> *T {
-                        return #self[0];
-                    }
+            }
+            []*$T ::: #public {
+                first :: (#self) -> *T {
+                    return #self[0];
                 }
+            }
+
             }
             ''')
 
@@ -502,6 +609,21 @@ class Formatter(unittest.TestCase):
              b'main :: () {\n    if x == {\n        // glofmt: off\ncase 0;\nx:=1;\n'
              b'            // glofmt: on\n            y := 2;\n'
              b'        else;\n            z := 3;\n    }\n}\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_format(source, expected)
+
+    def test_format_directives_track_visibility_groups(self):
+        cases = [
+            ('// glofmt: off\n#public{\n// glofmt: on\nvalue::1;}',
+             '// glofmt: off\n#public{\n// glofmt: on\nvalue :: 1;\n\n}\n'),
+            ('#public{value::1;\n// glofmt: off\n}\n// glofmt: on\nafter::2;',
+             '#public {\n\nvalue :: 1;\n// glofmt: off\n}\n// glofmt: on\nafter :: 2;\n'),
+            ('#public{ // glofmt: off\n  value::1;\n// glofmt: on\nafter::2;}',
+             '#public { // glofmt: off\n  value::1;\n// glofmt: on\nafter :: 2;\n\n}\n'),
+            ('#public{\n// glofmt: off\nThing::struct{\n    // glofmt: on\nfield:u8;}}',
+             '#public {\n\n// glofmt: off\nThing::struct{\n    // glofmt: on\n    field: u8;\n}\n\n}\n'),
         ]
         for source, expected in cases:
             with self.subTest(source=source):
