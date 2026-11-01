@@ -1,0 +1,9 @@
+//! One shared frontend instance, loaded relative to the formatter executable.
+#if OUT.os == .Linux {
+    #export "Glosso"(DYLIB_PREFIX = "$ORIGIN/../share");
+} else #if OUT.os == .Macos {
+    #export "Glosso"(DYLIB_PREFIX = "@executable_path/../share");
+} else {
+    // Windows loads the DLL beside the executable.
+    #export "Glosso"(DYLIB_PREFIX = "");
+}

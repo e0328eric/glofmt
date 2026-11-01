@@ -1,0 +1,154 @@
+//! Build and install glofmt with the current compiler's matching libglosso.
+#import "Compiler";
+#import "File_System/File";
+#import "File_System/Path";
+#import "File_System/System";
+#import "Glosso/Paths";
+#import "Format";
+#import "Io";
+#import "Os";
+#import "Process/Environment";
+#import "Typeclass/Error";
+
+glofmt_directory :: (path: str) {
+    if os_fs_is_directory(path) || os_fs_create_directories(path) return;
+    print("could not create {}\n", path);
+    exit(1);
+}
+
+// Stage before replacing, preserving the previous file if copying fails.
+// Replacing the directory entry also permits updating a running executable.
+glofmt_copy :: (source: str, destination: str) {
+    temporary := tprint("{}.glofmt-tmp", destination);
+    if os_fs_exists(temporary) || os_fs_is_symlink(temporary) {
+        if !os_fs_remove_path(temporary) {
+            print("could not replace {}\n", temporary);
+            exit(1);
+        }
+    }
+    if !os_fs_copy_file(source, temporary, false) {
+        _ = os_fs_remove_path(temporary);
+        print("could not copy {} to {}\n", source, destination);
+        exit(1);
+    }
+    if !os_fs_rename_path(temporary, destination) {
+        _ = os_fs_remove_path(temporary);
+        print("could not replace {}\n", destination);
+        exit(1);
+    }
+}
+
+glofmt_executable_name :: () -> str {
+    #if OUT.os == .Windows return "glofmt.exe";
+    else return "glofmt";
+}
+
+glofmt_library_directory :: (prefix: str, executable_directory: str) -> str {
+    #if OUT.os == .Windows return path_join(prefix, executable_directory);
+    else return path_join(prefix, "share");
+}
+
+glofmt_bundle :: (prefix: str, executable_directory: str) {
+    sdk_prefix := path_dirname(GLOSSO_STANDARD_DIRECTORY);
+    library := glosso_library_path(sdk_prefix);
+    defer library.free();
+    if !os_fs_is_regular_file(library) {
+        print("libglosso is missing: {}. Install Glosso or build its SDK with build.exe libglosso.\n", library);
+        exit(1);
+    }
+    directory := glofmt_library_directory(prefix, executable_directory);
+    defer directory.free();
+    glofmt_directory(directory);
+    destination := path_join(directory, glosso_library_filename());
+    defer destination.free();
+    glofmt_copy(library, destination);
+}
+
+glofmt_build :: () {
+    glofmt_directory("build");
+    glofmt_bundle(".", "build");
+    workspace := Workspace.create("glofmt");
+    options := workspace.get_build_options();
+    options.output_type = .Executable;
+    options.output_path = "build";
+    options.output_executable_name = "glofmt";
+    if absolute("build/cache") == {
+        case .Ok(path); options.add_compiler_arg(tprint("--cache-dir={}", path));
+        case .Err(failure); report_error(failure); exit(1);
+    }
+    options.set_build_options(workspace);
+    if add_build_file("main.glo", workspace) == {
+        case .Ok; print("built build/glofmt\n");
+        case .Err(failure); report_error(failure); exit(1);
+    }
+}
+
+glofmt_default_prefix :: () -> str {
+    variable := "HOME";
+    #if HOST.os == .Windows variable = "USERPROFILE";
+    if environment_get_or(variable, "") == {
+        case .Ok(directory);
+            defer directory.free();
+            if directory.count == 0 {
+                print("{} is not set; use install --prefix DIR\n", variable);
+                exit(1);
+            }
+            return path_join(directory, ".local/glofmt");
+        case .Err(failure); report_error(failure); exit(1);
+    }
+    return "";
+}
+
+glofmt_install :: (prefix: str) {
+    bin := path_join(prefix, "bin");
+    defer bin.free();
+    glofmt_directory(bin);
+    glofmt_bundle(prefix, "bin");
+    source := path_join("build", glofmt_executable_name());
+    defer source.free();
+    destination := path_join(bin, glofmt_executable_name());
+    defer destination.free();
+    glofmt_copy(source, destination);
+    print("installed {}\n", destination);
+}
+
+glofmt_usage :: () {
+    print(
+        #string
+            \\usage: glosso first.glo -- [build|install|help]
+            \\
+            \\  build                 build build/glofmt (the default)
+            \\  install [--prefix DIR] build and install (default: $HOME/.local/glofmt)
+            \\
+    );
+}
+
+glofmt_task :: () {
+    set_build_options_dc(.do_output = false);
+    args := get_cmdline_args();
+    task := "build";
+    if args.count > 0 task = args[0];
+    if #partial task == {
+        case "help", "--help", "-h"; glofmt_usage(); return;
+    }
+    prefix: str;
+    defer prefix.free();
+    if task == "install" {
+        if args.count == 1 prefix = glofmt_default_prefix();
+        else if args.count == 3 && args[1] == "--prefix" && args[2].count > 0
+            prefix = args[2].clone();
+        else {
+            glofmt_usage();
+            exit(1);
+        }
+    } else if task != "build" || args.count > 1 {
+        glofmt_usage();
+        exit(1);
+    }
+    glofmt_build();
+    if task == "install" glofmt_install(prefix);
+}
+
+#comptime glofmt_task();
+
+main :: () {}

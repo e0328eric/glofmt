@@ -1,0 +1,437 @@
+//! Syntax-directed layout over the compiler's lossless tokens. Operator syntax
+//! is collected before layout; input is never compiled or evaluated.
+#import "glosso.glo";
+#import "syntax.glo";
+#import "operators.glo";
+#import "String_Builder";
+#import "Strings";
+#import "Memory/Ownership";
+
+Fmt_Writer :: struct {
+    out: String_Builder;
+    indent: ssize = 4;
+    tabs: bool;
+    depth: ssize;
+    column: ssize;
+    line_start: bool = true;
+    pending: bool;
+    continuation: bool;
+    control_header: bool;
+    disabled_start: ssize = -1;
+}
+fmt_newline :: (writer: *Fmt_Writer) {
+    // Trimming here would corrupt comment or raw-string bytes.
+    if writer.disabled_start < 0 && !writer.line_start writer.out.write_byte(#char "\n");
+    writer.line_start = true;
+    writer.column = 0;
+    writer.pending = false;
+}
+fmt_blank_line :: (writer: *Fmt_Writer) {
+    fmt_newline(writer);
+    if writer.disabled_start >= 0 return;
+    count := writer.out.buf.count;
+    if count > 0 && (count < 2 || writer.out.buf[count - 2] != #char "\n")
+        writer.out.write_byte(#char "\n");
+}
+fmt_write :: (writer: *Fmt_Writer, text: str, space: bool, extra_indent: ssize = 0) {
+    if writer.line_start {
+        depth := writer.depth + extra_indent;
+        if writer.continuation depth += 1;
+        if writer.disabled_start < 0 {
+            if writer.tabs {
+                for 0..depth writer.out.write_byte(#char "\t");
+            } else {
+                for 0..depth * writer.indent writer.out.write_byte(#char " ");
+            }
+        }
+        writer.column = depth * writer.indent;
+        writer.line_start = false;
+    } else if space {
+        if writer.disabled_start < 0 writer.out.write_byte(#char " ");
+        writer.column += 1;
+    }
+    if writer.disabled_start < 0 writer.out.write_string(text);
+    for byte: text.bytes() {
+        if byte == #char "\n" writer.column = 0;
+        else if byte < 128 || byte >= 192 writer.column += 1;
+    }
+}
+
+fmt_operand_keyword :: (text: str) -> bool {
+    if text == {
+        case "return", "if", "ifx", "else", "while", "for", "case", "defer", "using", "where", "in";
+            return true;
+        else;
+            return false;
+    }
+}
+fmt_symbolic :: (token: *Fmt_Token) -> bool {
+    return token.kind == "Op" || token.kind == "Range" || token.kind == "RangeInclusive";
+}
+
+// Mark prefix/infix/postfix roles and type constructors before whitespace.
+fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        token.prefix = false;
+        token.suffix = false;
+        token.binary = false;
+        token.type_array = false;
+        token.lambda_open = false;
+        token.lambda_close = false;
+        token.lambda_parameter = false;
+    }
+    operand := true;
+    type_context := false;
+    previous: ssize = -1;
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        text := token.text;
+        if fmt_comment(token.kind) {
+            token.space = true;
+            continue;
+        }
+        prev_text := "";
+        prev_kind := "";
+        if previous >= 0 {
+            prev_text = tokens.*[previous].text;
+            prev_kind = tokens.*[previous].kind;
+        }
+        space := previous >= 0;
+        if text == "," || text == ",," || text == ";" || text == ":" || fmt_close(text) space = false;
+        if prev_text == "(" || prev_text == "[" || prev_text == ".[" || prev_text == "."
+            || prev_text == "$" || prev_text == "`" || prev_text == "``" space = false;
+        if previous >= 0 {
+            prev := &tokens.*[previous];
+            if prev.prefix && fmt_symbolic(prev) space = false;
+            if prev.text == ".." || prev.text == "..=" space = false;
+            if prev.text == "]" && prev.pair >= 0 && tokens.*[prev.pair].type_array space = false;
+        }
+        token.type_context = type_context;
+        token.operand_context = operand;
+        was_operand := operand;
+        if operand && text == "|" && !token.lambda_close {
+            next := i + 1;
+            while next < tokens.*.count && tokens.*[next].parent == token.parent {
+                if tokens.*[next].text == "|" {
+                    token.lambda_open = true;
+                    tokens.*[next].lambda_close = true;
+                    for parameter: i + 1..next tokens.*[parameter].lambda_parameter = true;
+                    break;
+                }
+                if tokens.*[next].text == ";" || tokens.*[next].text == "{" break;
+                if fmt_open(tokens.*[next].text) next = tokens.*[next].pair;
+                next += 1;
+            }
+        }
+        if previous >= 0 && tokens.*[previous].lambda_open space = false;
+        if token.lambda_close {
+            space = false;
+            operand = true;
+            type_context = false;
+        } else if token.lambda_open || (operand && text == "||") {
+            operand = true;
+            type_context = false;
+        } else if fmt_open(text) {
+            if text == "(" {
+                if !operand || prev_kind == "Directive" || prev_text == "cast" space = false;
+                type_context = prev_text == "cast";
+            } else if text == "[" {
+                token.type_array = operand;
+                if !operand space = false;
+            } else if text == ".{" || text == ".[" {
+                if !operand space = false;
+                type_context = false;
+            } else type_context = false;
+            operand = true;
+        } else if fmt_close(text) {
+            open := &tokens.*[token.pair];
+            type_context = open.type_context;
+            operand = open.type_array;
+            if open.type_array type_context = true;
+            if text == "}" && open.text == ".{" && token.pair + 1 < i space = true;
+        } else if text == ":" || text == "->" {
+            operand = true;
+            type_context = true;
+        } else if text == "::" || text == ":=" || text == "::=" || text == ":::" || text == "=" {
+            operand = true;
+            type_context = false;
+        } else if text == "," || text == ",," || text == ";" {
+            operand = true;
+            type_context = false;
+        } else if text == "." {
+            if !operand || prev_kind == "Directive" space = false;
+            operand = true;
+        } else if text == "$" || text == "`" || text == "``" {
+            operand = true;
+        } else {
+            op := fmt_operator(ops, text);
+            next := fmt_next_code(tokens.view(), i + 1);
+            boundary := next == tokens.*.count;
+            if !boundary boundary = fmt_close(tokens.*[next].text) || tokens.*[next].text == "," || tokens.*[next].text == ";";
+            if token.kind == "OpName" && next < tokens.*.count && tokens.*[next].text == "::" {
+                operand = false;
+            } else if !operand && text == "!" {
+                // E!T is a type constructor, including in expression position.
+                token.prefix = true;
+                space = false;
+                operand = true;
+            } else if operand && op.prefix {
+                token.prefix = true;
+                operand = true;
+            } else if !operand && op.suffix && (!op.binary || boundary) {
+                token.suffix = true;
+                if fmt_symbolic(token) || text == ".*" || text == ".&" space = false;
+                operand = false;
+            } else if (fmt_symbolic(token) || token.kind == "OpName" || op.binary) && text != "---" {
+                token.binary = true;
+                operand = true;
+            } else if fmt_operand_keyword(text) {
+                operand = true;
+                type_context = false;
+            } else if token.kind == "Directive" {
+                operand = text != "#self" && text != "#Self_Type" && text != "#source_location" && text != "#context";
+            } else if text == "const" && type_context {
+                operand = true;
+            } else operand = false;
+            if (text == ".." || text == "..=") && !was_operand space = false;
+        }
+        // Don't merge separate operators into a custom operator or comment.
+        // '?' is always separate punctuation in the Glosso lexer.
+        if previous >= 0 && prev_kind == "Op" && token.kind == "Op"
+            && prev_text != "?" && text != "?" space = true;
+        // Literal prefixes are adjacency-sensitive despite identical tokens.
+        if previous >= 0 && tokens.*[previous].end == token.start && prev_kind == "Ident"
+            && (token.kind == "Str" || token.kind == "MlStr" || text == "#string") space = false;
+        if i > 0 && fmt_comment(tokens.*[i - 1].kind) && !fmt_close(text) && text != "," && text != ";" space = true;
+        token.space = space;
+        previous = i;
+    }
+}
+
+// Trailing commas and comments request vertical lists (zig fmt); a width
+// budget also expands long lists (rustfmt). Measurements are bottom-up.
+fmt_measure :: (tokens: *[..]Fmt_Token) {
+    i := tokens.*.count;
+    while i > 0 {
+        i -= 1;
+        token := &tokens.*[i];
+        token.flat_width = fmt_width(token.text);
+        token.hardline = token.kind == "LineComment" || token.kind == "MlStr" || token.text.contains(
+            "\n"
+        );
+        if !fmt_open(token.text) continue;
+        end := token.pair;
+        if token.block && end > i + 1 token.hardline = true;
+        last := fmt_previous_code(tokens.view(), end - 1);
+        if last > i && tokens.*[last].text == "," token.hardline = true;
+        at := i + 1;
+        while at <= end {
+            child := &tokens.*[at];
+            if child.space token.flat_width += 1;
+            token.flat_width += child.flat_width;
+            if child.hardline token.hardline = true;
+            if fmt_open(child.text) at = child.pair + 1;
+            else at += 1;
+        }
+    }
+}
+
+fmt_after_block :: (text: str, kind: str) -> bool {
+    if text == {
+        case ";", ",", ",,", ")", "]", "}", "else", ".", ".*", ".&", "(", "[", "?";
+            return false;
+        else;
+            return kind != "Op" && kind != "Range" && kind != "RangeInclusive";
+    }
+}
+fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, width: ssize) -> str {
+    writer: Fmt_Writer = .{ .indent = indent, .tabs = tabs };
+    defer writer.out.free();
+    if source.starts_with("\u{feff}") writer.out.write_string("\u{feff}");
+    previous_end: ssize = 0;
+    asm_template := false;
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        text := token.text;
+        gap := source[previous_end..token.start];
+        lines := fmt_newlines(gap);
+        comment := fmt_comment(token.kind);
+        trailing_comment := comment && i > 0 && lines == 0;
+        in_block := token.parent < 0;
+        if token.parent >= 0 in_block = tokens.*[token.parent].block;
+        if fmt_close(text) {
+            open := &tokens.*[token.pair];
+            if open.block {
+                writer.continuation = false;
+                writer.control_header = false;
+            }
+            if open.arm_body writer.depth -= 1;
+            if open.multiline {
+                writer.depth -= 1;
+                fmt_newline(&writer);
+            }
+        }
+        next_code := fmt_next_code(tokens.view(), i + 1);
+        default_arm := token.kind == "Else" && next_code < tokens.*.count && tokens.*[next_code].text == ";";
+        if token.parent >= 0 && tokens.*[token.parent].case_block && (
+            token.kind == "Case" || default_arm
+        ) {
+            parent := &tokens.*[token.parent];
+            if parent.arm_body writer.depth -= 1;
+            parent.arm_body = false;
+            parent.arm_header = true;
+            fmt_newline(&writer);
+        }
+        if writer.pending && !trailing_comment fmt_newline(&writer);
+        if i > 0 && lines > 0 {
+            prev := &tokens.*[i - 1];
+            if in_block && !comment && !fmt_close(text) && text != "{" && text != "else" {
+                if token.binary || prev.binary || prev.text == ":=" || prev.text == "=" || prev.text == "::"
+                    writer.continuation = true;
+                if writer.control_header && !token.operand_context
+                    && (
+                        token.kind == "Ident" || token.kind == "Return" || token.kind == "Break" || token.kind == "Continue"
+                    )
+                    writer.continuation = true;
+            }
+            if (in_block || comment || prev.kind == "LineComment" || token.kind == "MlStr")
+                && !fmt_close(text) && text != "{" && text != "else" && text != ";" && text != ","
+                && !fmt_open(prev.text) fmt_newline(&writer);
+            if lines > 1 && !fmt_close(text) && text != "else" && text != "{" && in_block
+                && (prev.text == ";" || prev.text == "}" || fmt_comment(prev.kind)) fmt_blank_line(
+                    &writer
+                );
+        }
+        if token.kind == "MlStr" fmt_newline(&writer);
+        if text == "{" || text == "else" || token.kind == "Case" {
+            writer.continuation = false;
+            writer.control_header = false;
+        }
+        if token.kind == "If" || token.kind == "While" || token.kind == "For" || text == "#if"
+            writer.control_header = true;
+        // Assembly lines are block contents, not multiline string expressions.
+        if text == "{" {
+            previous := fmt_previous_code(tokens.view(), i - 1);
+            asm_template = previous >= 0 && tokens.*[previous].text == "#asm";
+        } else if token.kind != "MlStr" && !comment asm_template = false;
+        extra: ssize = 0;
+        if token.kind == "MlStr" && !asm_template extra = 1;
+        fmt_write(&writer, text, token.space, extra);
+        if fmt_open(text) {
+            nonempty := token.pair > i + 1;
+            token.multiline = nonempty && (
+                token.hardline || (
+                    text != "[" && writer.column - fmt_width(text) + token.flat_width > width
+                )
+            );
+            if token.multiline {
+                writer.depth += 1;
+                writer.pending = true;
+            }
+        } else if text == ";" {
+            if token.parent >= 0 && tokens.*[token.parent].arm_header {
+                tokens.*[token.parent].arm_header = false;
+                tokens.*[token.parent].arm_body = true;
+                writer.depth += 1;
+            }
+            if in_block {
+                writer.pending = true;
+                writer.continuation = false;
+                writer.control_header = false;
+            } else if token.parent >= 0 && tokens.*[token.parent].text == ".[" && tokens.*[token.parent].multiline writer.pending = true;
+        } else if text == "," || text == ",," {
+            if token.parent >= 0 && tokens.*[token.parent].multiline && !tokens.*[token.parent].block
+                && !token.lambda_parameter writer.pending = true;
+        } else if text == "}" && tokens.*[token.pair].block {
+            next := i + 1;
+            if next < tokens.*.count && fmt_after_block(tokens.*[next].text, tokens.*[next].kind) writer.pending = true;
+        }
+        // Keep computing layout while output is disabled, including delimiter
+        // and match-arm depth. Resume with the original bytes through the on
+        // comment, so its leading whitespace cannot alter the disabled region.
+        if token.format_disabled && writer.disabled_start < 0 {
+            writer.disabled_start = token.end;
+        } else if !token.format_disabled && writer.disabled_start >= 0 {
+            writer.out.write_string(source[writer.disabled_start..token.end]);
+            writer.disabled_start = -1;
+        }
+        if token.kind == "LineComment" || token.kind == "MlStr" fmt_newline(&writer);
+        previous_end = token.end;
+    }
+    if writer.disabled_start >= 0 writer.out.write_string(source[writer.disabled_start..]);
+    else fmt_newline(&writer);
+    return value_take(&writer.out).into_string();
+}
+
+fmt_verified :: (formatted: str, tokens: []Fmt_Token) -> bool {
+    scanned := glosso_tokens(formatted);
+    defer scanned.free();
+    if !scanned.success return false;
+    at: ssize = 0;
+    for token: scanned.tokens.view() {
+        if fmt_trivia(token.kind) continue;
+        if at >= tokens.count || tokens[at].kind != token.kind || tokens[at].text != formatted[token.start..token.end] return false;
+        at += 1;
+    }
+    return at == tokens.count;
+}
+
+fmt_checked_layout :: (
+    source: str,
+    fallback: str,
+    tokens: *[..]Fmt_Token,
+    indent: ssize,
+    tabs: bool,
+    width: ssize
+) -> str {
+    fmt_measure(tokens);
+    formatted := fmt_layout(source, tokens, indent, tabs, width);
+    if fmt_verified(formatted, tokens.view()) return formatted;
+    formatted.free();
+    return fallback.clone();
+}
+
+#public fmt_format :: (
+    source: str,
+    indent: ssize = 4,
+    tabs: bool = false,
+    width: ssize = 100,
+    source_path: str = "",
+    std_directory: str = GLOSSO_STANDARD_DIRECTORY,
+) -> str {
+    scanned := glosso_tokens(source);
+    defer scanned.free();
+    if !scanned.success return source.clone();
+    original := fmt_tokens(source, &scanned);
+    defer original.free();
+    if !fmt_pairs(&original) return source.clone();
+    ops := fmt_default_operators();
+    defer ops.free();
+    fmt_declarations(&ops, original.view());
+    fmt_spacing(&original, &ops);
+    if fmt_needs_imports(&ops, original.view()) {
+        fmt_import_operators(&ops, original.view(), source_path, std_directory);
+        fmt_spacing(&original, &ops);
+    }
+    normalized := fmt_normalize_operators(source, original.view(), &ops);
+    defer normalized.free();
+    if indent < 1 || indent > 16 indent = 4;
+    if width < 20 || width > 1000 width = 100;
+    if normalized == source return fmt_checked_layout(
+        source,
+        source,
+        &original,
+        indent,
+        tabs,
+        width
+    );
+    normalized_scan := glosso_tokens(normalized);
+    defer normalized_scan.free();
+    if !normalized_scan.success return source.clone();
+    tokens := fmt_tokens(normalized, &normalized_scan);
+    defer tokens.free();
+    if !fmt_pairs(&tokens) return source.clone();
+    fmt_spacing(&tokens, &ops);
+    return fmt_checked_layout(normalized, source, &tokens, indent, tabs, width);
+}

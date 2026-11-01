@@ -1,0 +1,346 @@
+//! Read operator syntax without semantic analysis or executing input code.
+#import "syntax.glo";
+#import "glosso.glo";
+#import "String_Builder";
+#import "Strings";
+#import "File_System/File";
+#import "File_System/Path";
+#import "File_System/System";
+#import "Memory/Ownership";
+#import "Os";
+
+#public {
+    Fmt_Operator :: struct {
+        name: str;
+        prefix: bool;
+        suffix: bool;
+        binary: bool;
+    }
+    Fmt_Operators :: struct {
+        entries: [..]Fmt_Operator;
+        visited: [..]str;
+        complete: bool = true;
+    }
+}
+Fmt_Operators ::: #public {
+    free :: (*#self) {
+        for entry: #self.entries.view() entry.name.free();
+        for path: #self.visited.view() path.free();
+        #self.entries.free();
+        #self.visited.free();
+    }
+}
+
+#public fmt_operator_name :: (text: str) -> str {
+    if text.count >= 2 && text.starts_with("'") && text.ends_with("'") return text[1..text.count - 1];
+    return text;
+}
+fmt_pointer_operator :: (text: str) -> bool {
+    if text.count == 0 return false;
+    first := text.bytes()[0];
+    if first != #char "*" && first != #char "&" return false;
+    for byte: text.bytes() if byte != first return false;
+    return true;
+}
+#public fmt_operator :: (ops: *Fmt_Operators, text: str) -> Fmt_Operator {
+    name := fmt_operator_name(text);
+    for entry: ops.entries.view() if entry.name == name {
+        result := entry;
+        if fmt_pointer_operator(name) result.prefix = true;
+        return result;
+    }
+    return .{ .prefix = fmt_pointer_operator(name) };
+}
+fmt_add_operator :: (ops: *Fmt_Operators, name: str, mode: str) {
+    at: ssize = -1;
+    for i: 0..ops.entries.count if ops.entries[i].name == name {
+        at = i;
+        break;
+    }
+    if at < 0 {
+        at = ops.entries.count;
+        ops.entries.push(.{ .name = name.clone() });
+    }
+    if mode == "prefix" ops.entries[at].prefix = true;
+    else if mode == "suffix" ops.entries[at].suffix = true;
+    else if mode == "left" || mode == "right" || mode == "assign" ops.entries[at].binary = true;
+}
+
+// The implicit Prelude's syntax, from std/Prelude/Primitive_Operators.glo and
+// Primitive_Typeclasses.glo. This seed keeps relocated bundles self-contained.
+// Explicitly imported declarations are added below, including forward uses.
+#public fmt_default_operators :: () -> Fmt_Operators {
+    ops: Fmt_Operators;
+    for name: .[
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "+%",
+        "-%",
+        "*%",
+        "+|",
+        "-|",
+        "*|",
+        "&",
+        "|",
+        "^",
+        "<<",
+        "<<|",
+        ">>",
+        "&&",
+        "||",
+        "==",
+        "!=",
+        "<=>",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "+%=",
+        "-%=",
+        "*%=",
+        "+|=",
+        "-|=",
+        "*|=",
+        "<<=",
+        "<<|=",
+        ">>=",
+        "&=",
+        "|=",
+        "^=",
+        "&&=",
+        "||=",
+        "..",
+        "..=",
+        "=",
+        "$=",
+        ":$="
+    ] {
+        fmt_add_operator(&ops, name, "left");
+    }
+    for name: .["-", "-%", "~", "!", "*", "&", "?", "..", "..="] {
+        fmt_add_operator(&ops, name, "prefix");
+    }
+    for name: .["?", ".*", ".&", ".."] {
+        fmt_add_operator(&ops, name, "suffix");
+    }
+    return ops;
+}
+
+#public fmt_declarations :: (ops: *Fmt_Operators, tokens: []Fmt_Token) {
+    for i: 0..tokens.count {
+        token := &tokens[i];
+        // These can introduce declarations that a static formatter cannot see.
+        if token.text == "#insert" || token.text == "#load_module" ops.complete = false;
+        if token.kind != "OpName" continue;
+        colon := fmt_next_code(tokens, i + 1);
+        if colon >= tokens.count || tokens[colon].text != "::" continue;
+        params := fmt_next_code(tokens, colon + 1);
+        if params >= tokens.count || tokens[params].text != "(" || tokens[params].pair < 0 continue;
+        // Even an incomplete declaration reserves the spelling; never split it.
+        fmt_add_operator(ops, fmt_operator_name(token.text), "");
+        at := tokens[params].pair + 1;
+        while at < tokens.count && tokens[at].text != "{" && tokens[at].text != ";" {
+            if tokens[at].text == "#operator" {
+                open := fmt_next_code(tokens, at + 1);
+                mode := fmt_next_code(tokens, open + 1);
+                if open < tokens.count && tokens[open].text == "(" && mode < tokens.count
+                    fmt_add_operator(ops, fmt_operator_name(token.text), tokens[mode].text);
+            }
+            at += 1;
+        }
+    }
+}
+
+fmt_module_candidate :: (base: str, name: str) -> str {
+    path := path_join(base, name);
+    defer path.free();
+    if os_fs_is_regular_file(path) return path.clone();
+    if os_fs_is_directory(path) {
+        module := path_join(path, "module.glo");
+        if os_fs_is_regular_file(module) return module;
+        module.free();
+    }
+    if path_extension(path).count == 0 {
+        extended: String_Builder;
+        defer extended.free();
+        extended.write_string(path);
+        extended.write_string(".glo");
+        if os_fs_is_regular_file(extended.to_string()) return value_take(&extended).into_string();
+    }
+    return "".clone();
+}
+fmt_resolve_import :: (name: str, source_path: str, std_directory: str) -> str {
+    // Match source imports versus named std modules; don't guess from CWD for
+    // a named module, since that could hide an unresolved custom operator.
+    if name.starts_with("./") || name.starts_with("../") || path_is_absolute(name) || name.ends_with(
+        ".glo"
+    )
+        return fmt_module_candidate(path_dirname(source_path), name);
+    if std_directory.count == 0 return "".clone();
+    if name == "Math" return fmt_module_candidate(std_directory, "Math/Core");
+    return fmt_module_candidate(std_directory, name);
+}
+fmt_read_operators :: (ops: *Fmt_Operators, path: str, std_directory: str, depth: ssize) {
+    if depth > 64 || ops.visited.count >= 512 {
+        ops.complete = false;
+        return;
+    }
+    normalized := path_clean(path);
+    defer normalized.free();
+    for visited: ops.visited.view() if visited == normalized return;
+    ops.visited.push(normalized.clone());
+    if File.open(path) == {
+        case .Err;
+            ops.complete = false;
+        case .Ok(file);
+            defer file.close();
+            if file.read_all() == {
+                case .Err;
+                    ops.complete = false;
+                case .Ok(source);
+                    defer source.free();
+                    scanned := glosso_tokens(source);
+                    defer scanned.free();
+                    if !scanned.success {
+                        ops.complete = false;
+                        return;
+                    }
+                    tokens := fmt_tokens(source, &scanned);
+                    defer tokens.free();
+                    if !fmt_pairs(&tokens) {
+                        ops.complete = false;
+                        return;
+                    }
+                    fmt_declarations(ops, tokens.view());
+                    fmt_import_operators(ops, tokens.view(), path, std_directory, depth + 1);
+            }
+    }
+}
+#public fmt_import_operators :: (
+    ops: *Fmt_Operators,
+    tokens: []Fmt_Token,
+    source_path: str,
+    std_directory: str,
+    depth: ssize = 0
+) {
+    for i: 0..tokens.count {
+        if tokens[i].text != "#import" && tokens[i].text != "#export" continue;
+        next := fmt_next_code(tokens, i + 1);
+        if next >= tokens.count || tokens[next].kind != "Str" {
+            ops.complete = false;
+            continue;
+        }
+        text := tokens[next].text;
+        // Escaped/dynamically computed paths remain unresolved, never executed.
+        if text.count < 2 || text.contains("\\") {
+            ops.complete = false;
+            continue;
+        }
+        path := fmt_resolve_import(text[1..text.count - 1], source_path, std_directory);
+        defer path.free();
+        if path.count == 0 {
+            ops.complete = false;
+            continue;
+        }
+        fmt_read_operators(ops, path, std_directory, depth);
+    }
+}
+
+fmt_declared :: (ops: *Fmt_Operators, text: str) -> bool {
+    op := fmt_operator(ops, text);
+    return op.name.count > 0 || op.prefix || text == "!" || text == "@";
+}
+#public fmt_needs_imports :: (ops: *Fmt_Operators, tokens: []Fmt_Token) -> bool {
+    for i: 0..tokens.count {
+        token := &tokens[i];
+        if token.kind != "Op" && token.kind != "OpName" continue;
+        if token.text == "---" || token.text == "@" || token.text == "||->" || token.text == "||" || token.text == "|" continue;
+        if !fmt_declared(ops, token.text) return true;
+        next := fmt_next_code(tokens, i + 1);
+        if next < tokens.count && tokens[next].text == "::" continue;
+        op := fmt_operator(ops, token.text);
+        // Imports can add a new fixity to a spelling already in the Prelude.
+        if token.operand_context && !op.prefix return true;
+        if !token.operand_context && !op.suffix && next < tokens.count
+            && (
+                fmt_close(tokens[next].text) || tokens[next].text == ";" || tokens[next].text == ","
+            ) return true;
+    }
+    return false;
+}
+
+// A bounded dynamic program mirrors the compiler's glued-operator diagnostic:
+// retain a declared spelling; otherwise find a known lead + prefix operators.
+// A split is a deliberate repair, so the renderer verifies against this new
+// token stream, rather than silently weakening its token-preservation check.
+#public fmt_normalize_operators :: (source: str, tokens: []Fmt_Token, ops: *Fmt_Operators) -> str {
+    out: String_Builder;
+    defer out.free();
+    end: ssize = 0;
+    for i: 0..tokens.count {
+        token := &tokens[i];
+        out.write_string(source[end..token.start]);
+        text := token.text;
+        split: ssize = -1;
+        splits: [17]ssize;
+        for j: 0..17 splits[j] = -1;
+        next := fmt_next_code(tokens, i + 1);
+        operand_follows := next < tokens.count;
+        if operand_follows {
+            following := tokens[next].text;
+            operand_follows = !fmt_close(following) && following != ";" && following != ",";
+        }
+        if !token.format_disabled && ops.complete && token.kind == "Op" && text.count > 1 && text.count <= 16
+            && !fmt_declared(ops, text) && operand_follows {
+            ascii := true;
+            for byte: text.bytes() if byte >= 128 ascii = false;
+            if ascii {
+                splits[text.count] = text.count;
+                start := text.count - 1;
+                while start > 0 {
+                    stop := text.count;
+                    while stop > start {
+                        if splits[stop] >= 0 && fmt_operator(ops, text[start..stop]).prefix {
+                            splits[start] = stop;
+                            break;
+                        }
+                        stop -= 1;
+                    }
+                    start -= 1;
+                }
+                start = text.count - 1;
+                while start > 0 {
+                    lead := fmt_operator(ops, text[..start]);
+                    allowed := lead.binary;
+                    if token.operand_context allowed = lead.prefix;
+                    if splits[start] >= 0 && allowed {
+                        split = start;
+                        break;
+                    }
+                    start -= 1;
+                }
+            }
+        }
+        if split < 0 out.write_string(text);
+        else {
+            out.write_string(text[..split]);
+            while split < text.count {
+                stop := splits[split];
+                out.write_byte(#char " ");
+                out.write_string(text[split..stop]);
+                split = stop;
+            }
+        }
+        end = token.end;
+    }
+    out.write_string(source[end..]);
+    return value_take(&out).into_string();
+}

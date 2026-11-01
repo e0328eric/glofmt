@@ -1,0 +1,155 @@
+#import "src/glosso.glo";
+#import "src/format.glo";
+#import "src/config.glo";
+#import "Io";
+#import "File_System/File";
+#import "File_System/Atomic";
+#import "File_System/Types";
+#import "Strings";
+#import "Command_Line";
+
+option_number :: (text: str, maximum: ssize) -> ssize {
+    if text.count == 0 return -1;
+    value: ssize = 0;
+    for digit: text.bytes() {
+        if digit < 48 || digit > 57 || value > maximum return -1;
+        value = value * 10 + cast(ssize)(digit - 48);
+    }
+    return value;
+}
+
+main :: () -> s32 {
+    arguments := get_cmdline_args();
+    path := "-";
+    check := false;
+    write := false;
+    stdout := false;
+    tabs := false;
+    indent: ssize = 4;
+    have_path := false;
+    width: ssize = 100;
+    have_width := false;
+    std_directory := GLOSSO_STANDARD_DIRECTORY;
+    stdin_path := "";
+    for i: 1..arguments.count {
+        arg := arguments[i];
+        if arg == {
+            case "--help", "-h";
+                print(
+                    "glofmt [--check | --stdout | --write] [--tabs] [--indent=N] [--width=N] [--std=DIR] [--stdin-filepath=PATH] [FILE | -]\n"
+                );
+                print(
+                    "Width: 20 through 1000 (default 100); --width overrides width in get_config_dir()/glofmt/config.toml.\n"
+                );
+                return 0;
+            case "--version";
+                print("glofmt 0.1.0 (libglosso ABI {})\n", glosso_abi_version());
+                return 0;
+            case "--check";
+                check = true;
+            case "--write", "-w";
+                write = true;
+            case "--stdout";
+                stdout = true;
+            case "--tabs";
+                tabs = true;
+            else;
+                if arg.starts_with("--indent=") {
+                    indent = option_number(arg[9..], 16);
+                } else if arg.starts_with("--width=") {
+                    width = option_number(arg[8..], 1000);
+                    have_width = true;
+                } else if arg.starts_with("--std=") {
+                    std_directory = arg[6..];
+                    if std_directory.count == 0 return 2;
+                } else if arg.starts_with("--stdin-filepath=") {
+                    stdin_path = arg[17..];
+                    if stdin_path.count == 0 return 2;
+                } else {
+                    if arg.starts_with("-") && arg != "-" return 2;
+                    if have_path {
+                        error := File.stderr();
+                        _ = error.write("glofmt: expected one input file\n");
+                        return 2;
+                    }
+                    path = arg;
+                    have_path = true;
+                }
+        }
+    }
+    if indent < 1 || indent > 16 || width < 20 || width > 1000 return 2;
+    if (write && (check || stdout || path == "-")) || (check && stdout) return 2;
+    if stdin_path.count > 0 && path != "-" return 2;
+    if fmt_config_width() == {
+        case .Some(config_width);
+            if !have_width width = config_width;
+        case null;
+            return 2;
+    }
+    input := File.stdin();
+    if path != "-" {
+        if File.open(path) == {
+            case .Ok(file);
+                input = file;
+            case .Err;
+                error := File.stderr();
+                _ = error.write("glofmt: cannot open input\n");
+                return 2;
+        }
+    }
+    defer input.close();
+    source: str;
+    if input.read_all() == {
+        case .Ok(text);
+            source = text;
+        case .Err;
+            error := File.stderr();
+            _ = error.write("glofmt: cannot read input\n");
+            return 2;
+    }
+    defer source.free();
+    scanned := glosso_tokens(source);
+    defer scanned.free();
+    if !scanned.success {
+        error := File.stderr();
+        _ = error.write(scanned.error);
+        _ = error.write("\n");
+        return 2;
+    }
+    source_path := path;
+    if stdin_path.count > 0 source_path = stdin_path;
+    formatted := fmt_format(source, indent, tabs, width, source_path, std_directory);
+    defer formatted.free();
+    if check {
+        if formatted != source return 1;
+        return 0;
+    }
+    if path != "-" && !stdout {
+        if formatted != source {
+            if atomic_write(
+                path,
+                formatted.bytes(),
+                .flags = Atomic_Write_Flags.Default | Atomic_Write_Flags.Preserve_Permissions
+            ) == {
+                case .Ok;
+                case .Err;
+                    error := File.stderr();
+                    _ = error.write("glofmt: cannot replace file\n");
+                    return 2;
+            }
+        }
+    } else {
+        output := File.stdout();
+        at: ssize = 0;
+        while at < formatted.count {
+            if output.write(formatted[at..]) == {
+                case .Ok(count);
+                    if count <= 0 return 2;
+                    at += count;
+                case .Err;
+                    return 2;
+            }
+        }
+    }
+    return 0;
+}

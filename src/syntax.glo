@@ -1,0 +1,120 @@
+//! Lossless tokens plus delimiter and spacing facts used by the renderer.
+#import "glosso.glo";
+#import "Strings";
+
+#public {
+    Fmt_Token :: struct {
+        text: str;
+        kind: str;
+        start: ssize;
+        end: ssize;
+        // Formatting state after this token; directives do not nest.
+        format_disabled: bool;
+        pair: ssize = -1;
+        parent: ssize = -1;
+        space: bool = true;
+        prefix: bool;
+        suffix: bool;
+        binary: bool;
+        type_context: bool;
+        operand_context: bool;
+        lambda_open: bool;
+        lambda_close: bool;
+        lambda_parameter: bool;
+        case_block: bool;
+        arm_header: bool;
+        arm_body: bool;
+        type_array: bool;
+        block: bool;
+        multiline: bool;
+        hardline: bool;
+        flat_width: ssize;
+    }
+
+    fmt_trivia :: (kind: str) -> bool {
+        return kind == "Whitespace" || kind == "Eof" || kind == "ByteOrderMark";
+    }
+    fmt_comment :: (kind: str) -> bool {
+        return kind == "LineComment" || kind == "BlockComment";
+    }
+    fmt_open :: (text: str) -> bool {
+        return text == "(" || text == "[" || text == ".[" || text == "{" || text == ".{";
+    }
+    fmt_close :: (text: str) -> bool {
+        return text == ")" || text == "]" || text == "}";
+    }
+    fmt_closes :: (open: str, close: str) -> bool {
+        if close == ")" return open == "(";
+        if close == "]" return open == "[" || open == ".[";
+        return open == "{" || open == ".{";
+    }
+    fmt_newlines :: (text: str) -> ssize {
+        count: ssize = 0;
+        for byte: text.bytes() if byte == #char "\n" count += 1;
+        return count;
+    }
+    fmt_width :: (text: str) -> ssize {
+        count: ssize = 0;
+        // Count UTF-8 scalars, rather than penalizing non-ASCII names by byte length.
+        for byte: text.bytes() if byte < 128 || byte >= 192 count += 1;
+        return count;
+    }
+    fmt_tokens :: (source: str, scanned: *Glosso_Tokens) -> [..]Fmt_Token {
+        result: [..]Fmt_Token;
+        disabled := false;
+        for token: scanned.tokens.view() {
+            if fmt_trivia(token.kind) continue;
+            text := source[token.start..token.end];
+            if token.kind == "LineComment" {
+                directive := text[2..].trim();
+                if directive == "glofmt: off" disabled = true;
+                else if directive == "glofmt: on" disabled = false;
+            }
+            result.push(
+                .{
+                    .text = text,
+                    .kind = token.kind,
+                    .start = token.start,
+                    .end = token.end,
+                    .format_disabled = disabled,
+                }
+            );
+        }
+        return result;
+    }
+    fmt_pairs :: (tokens: *[..]Fmt_Token) -> bool {
+        stack: [..]ssize;
+        defer stack.free();
+        for i: 0..tokens.*.count {
+            token := &tokens.*[i];
+            if stack.count > 0 token.parent = stack[stack.count - 1];
+            if token.kind == "Case" && token.parent >= 0 && tokens.*[token.parent].block
+                tokens.*[token.parent].case_block = true;
+            if fmt_open(token.text) {
+                // Both the import walker and renderer have explicit nesting bounds.
+                if stack.count >= 256 return false;
+                stack.push(i);
+                token.block = token.text == "{";
+            } else if fmt_close(token.text) {
+                if stack.count == 0 return false;
+                open := stack[stack.count - 1];
+                if !fmt_closes(tokens.*[open].text, token.text) return false;
+                tokens.*[open].pair = i;
+                token.pair = open;
+                token.parent = tokens.*[open].parent;
+                _ = stack.pop();
+            }
+        }
+        return stack.count == 0;
+    }
+    fmt_next_code :: (tokens: []Fmt_Token, start: ssize) -> ssize {
+        i := start;
+        while i < tokens.count && fmt_comment(tokens[i].kind) i += 1;
+        return i;
+    }
+    fmt_previous_code :: (tokens: []Fmt_Token, start: ssize) -> ssize {
+        i := start;
+        while i >= 0 && fmt_comment(tokens[i].kind) i -= 1;
+        return i;
+    }
+}

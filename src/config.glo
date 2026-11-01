@@ -1,0 +1,72 @@
+//! User configuration at get_config_dir()/glofmt/config.toml.
+#import "File_System/Directory";
+#import "File_System/File";
+#import "File_System/Path";
+#import "Format";
+#import "Serialization/Core";
+#import "Serialization/Toml";
+#import "Strings";
+
+fmt_config_error :: (path: str, message: str) -> ?ssize {
+    error := File.stderr();
+    _ = error.write(tprint("glofmt: {}: {}\n", path, message));
+    return null;
+}
+
+// Missing configuration uses the default; failures are reported before input
+// is read or any source file can be replaced.
+#public fmt_config_width :: () -> ?ssize {
+    directory: Path;
+    if get_config_dir() == {
+        case null;
+            return .Some(100);
+        case .Some(path);
+            directory = path;
+    }
+    defer directory.free();
+    base := directory.to_string();
+    defer base.free();
+    path := path_join(base, "glofmt/config.toml");
+    defer path.free();
+
+    input: File;
+    if File.open(path) == {
+        case .Ok(file);
+            input = file;
+        case .Err(failure);
+            if failure.kind == .Not_Found return .Some(100);
+            return fmt_config_error(path, failure.kind.reason());
+    }
+    defer input.close();
+    source: str;
+    if input.read_all() == {
+        case .Ok(text);
+            source = text;
+        case .Err(failure);
+            return fmt_config_error(path, failure.kind.reason());
+    }
+    defer source.free();
+
+    document: Serialization_Document;
+    if Serialization_Document.toml_document_from_string(source) == {
+        case .Ok(parsed);
+            document = parsed;
+        case .Err(failure);
+            return fmt_config_error(
+                path,
+                tprint("invalid TOML at byte {}: {}", failure.offset, failure.message)
+            );
+    }
+    defer document.destroy();
+    if document.root.field_value("width") == {
+        case null;
+            return .Some(100);
+        case .Some(value);
+            if deserialize(ssize, value) == {
+                case .Ok(width);
+                    if width >= 20 && width <= 1000 return .Some(width);
+                case .Err;
+            }
+    }
+    return fmt_config_error(path, "width must be an integer from 20 through 1000");
+}
