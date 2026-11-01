@@ -68,6 +68,14 @@ fmt_operand_keyword :: (text: str) -> bool {
 fmt_symbolic :: (token: *Fmt_Token) -> bool {
     return token.kind == "Op" || token.kind == "Range" || token.kind == "RangeInclusive";
 }
+fmt_directive_modifiers :: (text: str) -> bool {
+    if text == {
+        case "#inline", "#expand", "#public", "#library", "#string", "#derive", "#insert";
+            return true;
+        else;
+            return false;
+    }
+}
 
 // Mark prefix/infix/postfix roles and type constructors before whitespace.
 fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
@@ -82,6 +90,7 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         token.lambda_open = false;
         token.lambda_close = false;
         token.lambda_parameter = false;
+        token.directive_modifier = false;
     }
     // A type before ':::' starts a declaration, even after a body with no ';'.
     // Skip paired type arguments/counts while finding the head's first token.
@@ -126,6 +135,15 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             if prev.prefix && fmt_symbolic(prev) space = false;
             if prev.text == ".." || prev.text == "..=" space = false;
             if prev.text == "]" && prev.pair >= 0 && tokens.*[prev.pair].type_array space = false;
+            // Modifier commas are neither expression nor list separators.
+            // Follow chains such as #string,oneline,escape across comments.
+            if text == "," {
+                token.directive_modifier = (prev_kind == "Directive" && fmt_directive_modifiers(prev_text))
+                    || (prev_kind == "Ident" && prev.directive_modifier);
+            } else if token.kind == "Ident" && prev_text == "," && prev.directive_modifier {
+                token.directive_modifier = true;
+                space = false;
+            }
         }
         token.type_context = type_context;
         token.operand_context = operand;
@@ -374,7 +392,7 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             } else if token.parent >= 0 && tokens.*[token.parent].text == ".[" && tokens.*[token.parent].multiline writer.pending = true;
         } else if text == "," || text == ",," {
             if token.parent >= 0 && tokens.*[token.parent].multiline && !tokens.*[token.parent].block
-                && !token.lambda_parameter writer.pending = true;
+                && !token.lambda_parameter && !token.directive_modifier writer.pending = true;
         } else if text == "}" && tokens.*[token.pair].block {
             next := i + 1;
             if next < tokens.*.count && (

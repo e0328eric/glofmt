@@ -22,6 +22,8 @@
         lambda_open: bool;
         lambda_close: bool;
         lambda_parameter: bool;
+        // Commas and names in directive modifiers, such as #inline,always.
+        directive_modifier: bool;
         case_block: bool;
         arm_header: bool;
         arm_body: bool;

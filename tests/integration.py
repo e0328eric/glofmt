@@ -84,6 +84,61 @@ class Formatter(unittest.TestCase):
             }
             ''')
 
+    def test_directive_modifiers(self):
+        cases = [
+            ('run::()#inline,always{}', 'run :: () #inline,always {}\n'),
+            ('run::()#inline,never{}', 'run :: () #inline,never {}\n'),
+            ('run::()#expand,expression{}', 'run :: () #expand,expression {}\n'),
+            ('#public,unit value::1;', '#public,unit value :: 1;\n'),
+            ('#public,to("Friend","Other")value::1;',
+             '#public,to("Friend", "Other") value :: 1;\n'),
+            ('lib::#library,system "c";', 'lib :: #library,system "c";\n'),
+            ('lib::#library,static "lib.a";', 'lib :: #library,static "lib.a";\n'),
+            ('lib::#library,dyn "lib.so";', 'lib :: #library,dyn "lib.so";\n'),
+            ('Meters::distinct f64 #derive,all;', 'Meters :: distinct f64 #derive,all;\n'),
+            ('#insert,scope() code;', '#insert,scope() code;\n'),
+        ]
+        for source, expected in cases:
+            for spaced in [source, source.replace(',', ' ,  ')]:
+                with self.subTest(source=spaced):
+                    self.assert_format(spaced, expected)
+
+    def test_directive_modifiers_in_multiline_lists(self):
+        self.assert_format('each(values,()#inline,always{work();},);', '''
+            each(
+                values,
+                () #inline,always {
+                    work();
+                },
+            );
+            ''')
+        for modifiers in ['oneline', 'escape', 'oneline,escape', 'escape,oneline']:
+            with self.subTest(modifiers=modifiers):
+                self.assert_format(
+                    'use(#string , ' + modifiers.replace(',', ' , ') + '\n'
+                    '\\\\first\\t\n\\\\second\n,value);',
+                    'use(\n    #string,' + modifiers + '\n'
+                    '        \\\\first\\t\n        \\\\second\n    ,\n    value\n);\n',
+                )
+
+    def test_directive_modifiers_preserve_comments(self):
+        self.assert_format(
+            'run::()#inline/* mode */,/* reason */always{}\n'
+            'other::()#inline, // reason\nnever{}',
+            'run :: () #inline /* mode */, /* reason */ always {}\n'
+            'other :: () #inline, // reason\nnever {}\n',
+        )
+
+    def test_directive_values_and_argument_commas(self):
+        self.assert_format(
+            'call(#self,value,#context,#source_location,#undefined);'
+            'Types::(#Self_Type,#Context,#Never);'
+            "'+'::(a:T,b:T)->T #operator(left,18){}",
+            'call(#self, value, #context, #source_location, #undefined);\n'
+            'Types :: (#Self_Type, #Context, #Never);\n'
+            "'+' :: (a: T, b: T) -> T #operator(left, 18) {}\n",
+        )
+
     def test_cast_prefix_operands(self):
         self.assert_format(
             'function:=cast(Generated_Function)&code;#assert cast(usize)&code%64==0;',
