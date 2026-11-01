@@ -84,6 +84,46 @@ class Formatter(unittest.TestCase):
             }
             ''')
 
+    def test_variadic_parameters_and_argument_expansion(self):
+        self.assert_format(
+            'VgaWriter ::: #public {\n'
+            '    print :: (*#self, #comptime format: str, args: ... any) -> Io_Error!void {\n'
+            '        #self.write_format(format, args ...)?;\n'
+            '        return .Ok;\n'
+            '    }\n'
+            '}\n',
+            '''
+            VgaWriter ::: #public {
+                print :: (*#self, #comptime format: str, args: ...any) -> Io_Error!void {
+                    #self.write_format(format, args...)?;
+                    return .Ok;
+                }
+            }
+            ''',
+        )
+        cases = [
+            ('run::(args: ... $T){}', 'run :: (args: ...$T) {}\n'),
+            ('run::(args: ... (Show && Debug)){}',
+             'run :: (args: ...(Show && Debug)) {}\n'),
+            ('run::(args: ...){}', 'run :: (args: ...) {}\n'),
+            ('run::(fixed:s32, ...){}', 'run :: (fixed: s32, ...) {}\n'),
+            ('call((args) ...,object.args ...,get_args() ...);',
+             'call((args)..., object.args..., get_args()...);\n'),
+            ('run::(args: ... any,){call(args ...,);}',
+             'run :: (\n    args: ...any,\n) {\n    call(\n        args...,\n    );\n}\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_format(source, expected)
+
+    def test_variadic_spacing_preserves_comments(self):
+        self.assert_format(
+            'run::(args: ... /* type */ any){call(args /* expand */ ...);}',
+            'run :: (args: ... /* type */ any) {\n'
+            '    call(args /* expand */ ...);\n'
+            '}\n',
+        )
+
     def test_directive_modifiers(self):
         cases = [
             ('run::()#inline,always{}', 'run :: () #inline,always {}\n'),

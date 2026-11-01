@@ -133,7 +133,7 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             || prev_text == "$" || prev_text == "`" || prev_text == "``" space = false;
         if previous >= 0 {
             prev := &tokens.*[previous];
-            if prev.prefix && fmt_symbolic(prev) space = false;
+            if prev.prefix && (fmt_symbolic(prev) || prev.text == "...") space = false;
             if prev.text == ".." || prev.text == "..=" space = false;
             if prev.text == "]" && prev.pair >= 0 && tokens.*[prev.pair].type_array space = false;
             // Modifier commas are neither expression nor list separators.
@@ -206,6 +206,11 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         } else if text == "." {
             if !operand || prev_kind == "Directive" space = false;
             operand = true;
+        } else if text == "..." {
+            // Variadic parameters prefix their type; expansions follow a value.
+            token.prefix = operand;
+            token.suffix = !operand;
+            if token.suffix space = false;
         } else if text == "$" || text == "`" || text == "``" {
             operand = true;
         } else {
