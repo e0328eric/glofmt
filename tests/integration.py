@@ -84,6 +84,49 @@ class Formatter(unittest.TestCase):
             }
             ''')
 
+    def test_cast_prefix_operands(self):
+        self.assert_format(
+            'function:=cast(Generated_Function)&code;#assert cast(usize)&code%64==0;',
+            'function := cast(Generated_Function) &code;\n'
+            '#assert cast(usize) &code % 64 == 0;\n',
+        )
+        for operator in ['&', '&&', '*', '**', '-', '!', '~']:
+            with self.subTest(operator=operator):
+                self.assert_format(
+                    f'result:=cast(T) {operator} value;',
+                    f'result := cast(T) {operator}value;\n',
+                )
+
+    def test_cast_type_delimiters(self):
+        self.assert_format(
+            'a:=cast(*const Pair(u8,u16))&value;'
+            'b:=cast(usize)cast(*void)&value;'
+            'c:=cast /* target */ (T) /* operand */ & value;'
+            'd:=cast(T)! !ready;',
+            '''
+            a := cast(*const Pair(u8, u16)) &value;
+            b := cast(usize) cast(*void) &value;
+            c := cast /* target */ (T) /* operand */ &value;
+            d := cast(T) ! !ready;
+            ''',
+        )
+
+    def test_cast_operands_and_binary_continuations(self):
+        self.assert_format(
+            'a:=cast(usize)(&value)&mask;b:=(cast(usize)&value)&mask;'
+            'c:=cast(s32)(value)*scale;d:=cast(usize)address&mask;'
+            'e:=call(value)&mask;f:=(value)-offset;g:=cast(s32)-value-offset;',
+            '''
+            a := cast(usize)(&value) & mask;
+            b := (cast(usize) &value) & mask;
+            c := cast(s32)(value) * scale;
+            d := cast(usize) address & mask;
+            e := call(value) & mask;
+            f := (value) - offset;
+            g := cast(s32) -value - offset;
+            ''',
+        )
+
     def test_undeclared_glued_operator(self):
         self.assert_format('main::(){a:=-1;b:=x*-2;c:=foo.bar[0];x=-1;}', '''
             main :: () {
@@ -191,6 +234,91 @@ class Formatter(unittest.TestCase):
             ''')
         self.assert_format('a:=..3;b:=..=4;c:=1..;d:=items[..-1];',
                            'a := ..3;\nb := ..=4;\nc := 1..;\nd := items[..-1];\n')
+
+    def test_type_declaration_heads_after_blocks(self):
+        heads = [
+            ('[] const u8', '[]const u8'),
+            ('[] u8', '[]u8'),
+            ('* [..] u8', '*[..]u8'),
+            ('* const [..] u8', '*const [..]u8'),
+            ('[4] u8', '[4]u8'),
+            ('[*] const volatile * u8', '[*]const volatile *u8'),
+            ('? [] const u8', '?[]const u8'),
+            ('[] * $ T', '[]*$T'),
+            ('* * const [4] u8', '* *const [4]u8'),
+            ('E ! ? [..] u8', 'E!?[..]u8'),
+            ('([] const u8, * const [..] u8)', '([]const u8, *const [..]u8)'),
+        ]
+        for source, expected in heads:
+            for gap in ['', '\n', ' // keep\n', '\n\n/// docs\n']:
+                with self.subTest(head=source, gap=gap):
+                    self.assert_format(
+                        'Header::struct{}' + gap + source + ':::instance Source{}',
+                        'Header :: struct {}' + (gap or '\n') +
+                        expected + ' ::: instance Source {}\n',
+                    )
+
+    def test_nested_type_declarations(self):
+        self.assert_format('''#public {
+            Source::typeclass(T:type){}
+            [] const u8:::instance Source{view::(source:[]const u8)->[]const u8{return source;}}
+            * const [..] u8:::instance Source{view::(source:*const [..]u8)->[]const u8{return source.*.view();}}
+            [] * $ T:::#public{first::(#self)->*T{return #self[0];}}
+        }''', '''
+            #public {
+                Source :: typeclass(T: type) {}
+                []const u8 ::: instance Source {
+                    view :: (source: []const u8) -> []const u8 {
+                        return source;
+                    }
+                }
+                *const [..]u8 ::: instance Source {
+                    view :: (source: *const [..]u8) -> []const u8 {
+                        return source.*.view();
+                    }
+                }
+                []*$T ::: #public {
+                    first :: (#self) -> *T {
+                        return #self[0];
+                    }
+                }
+            }
+            ''')
+
+    def test_qualified_nested_type_values(self):
+        self.assert_format(
+            'A::* const [..] u8;B::** volatile [] const * u8;'
+            'C::[*] const volatile * const [4] u8;'
+            'main::(){use(*const []u8,[]volatile *u8);p:*volatile []const u8;}',
+            '''
+            A :: *const [..]u8;
+            B :: **volatile []const *u8;
+            C :: [*]const volatile *const [4]u8;
+            main :: () {
+                use(*const []u8, []volatile *u8);
+                p: *volatile []const u8;
+            }
+            ''')
+
+    def test_expression_continuations_after_groups(self):
+        self.assert_format(
+            'main::(){a:=values[index]*scale;b:=Point.{.x=1}*scale;'
+            'c:=#try{operation()}*scale;d:=(){return 1;}();'
+            'e:=Point.{.x=1}[index];f:=.[1,2][index];}',
+            '''
+            main :: () {
+                a := values[index] * scale;
+                b := Point.{ .x = 1 } * scale;
+                c := #try {
+                    operation()
+                } * scale;
+                d := () {
+                    return 1;
+                }();
+                e := Point.{ .x = 1 }[index];
+                f := .[1, 2][index];
+            }
+            ''')
 
     def test_lambda_parameters_and_match_arms(self):
         self.assert_format('main::(){f:=|x,y|x+y;g:=||42;if x=={case 0,1;return -1;else;return 0;}}', '''

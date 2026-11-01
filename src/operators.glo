@@ -35,7 +35,7 @@ Fmt_Operators ::: #public {
     if text.count >= 2 && text.starts_with("'") && text.ends_with("'") return text[1..text.count - 1];
     return text;
 }
-fmt_pointer_operator :: (text: str) -> bool {
+#public fmt_pointer_operator :: (text: str) -> bool {
     if text.count == 0 return false;
     first := text.bytes()[0];
     if first != #char "*" && first != #char "&" return false;

@@ -76,10 +76,26 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         token.prefix = false;
         token.suffix = false;
         token.binary = false;
+        token.type_head_start = false;
         token.type_array = false;
+        token.cast_type = false;
         token.lambda_open = false;
         token.lambda_close = false;
         token.lambda_parameter = false;
+    }
+    // A type before ':::' starts a declaration, even after a body with no ';'.
+    // Skip paired type arguments/counts while finding the head's first token.
+    for i: 0..tokens.*.count {
+        if tokens.*[i].text != ":::" continue;
+        start := i;
+        at := fmt_previous_code(tokens.view(), i - 1);
+        while at >= 0 && tokens.*[at].parent == tokens.*[i].parent {
+            if tokens.*[at].text == ";" || tokens.*[at].text == "}" break;
+            start = at;
+            if fmt_close(tokens.*[at].text) start = tokens.*[at].pair;
+            at = fmt_previous_code(tokens.view(), start - 1);
+        }
+        if start < i tokens.*[start].type_head_start = true;
     }
     operand := true;
     type_context := false;
@@ -90,6 +106,10 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         if fmt_comment(token.kind) {
             token.space = true;
             continue;
+        }
+        if token.type_head_start {
+            operand = true;
+            type_context = true;
         }
         prev_text := "";
         prev_kind := "";
@@ -134,8 +154,11 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             type_context = false;
         } else if fmt_open(text) {
             if text == "(" {
-                if !operand || prev_kind == "Directive" || prev_text == "cast" space = false;
-                type_context = prev_text == "cast";
+                // Keep parenthesized cast operands attached: cast(T)(value).
+                if !operand || prev_kind == "Directive" || prev_text == "cast"
+                    || (previous >= 0 && tokens.*[previous].cast_type) space = false;
+                token.cast_type = prev_text == "cast";
+                type_context = token.cast_type;
             } else if text == "[" {
                 token.type_array = operand;
                 if !operand space = false;
@@ -147,7 +170,9 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         } else if fmt_close(text) {
             open := &tokens.*[token.pair];
             type_context = open.type_context;
-            operand = open.type_array;
+            // cast(T) still needs its operand; a following '&' is a prefix.
+            token.cast_type = open.cast_type;
+            operand = open.type_array || token.cast_type;
             if open.type_array type_context = true;
             if text == "}" && open.text == ".{" && token.pair + 1 < i space = true;
         } else if text == ":" || text == "->" {
@@ -191,8 +216,15 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
                 type_context = false;
             } else if token.kind == "Directive" {
                 operand = text != "#self" && text != "#Self_Type" && text != "#source_location" && text != "#context";
-            } else if text == "const" && type_context {
+            } else if (text == "const" || text == "volatile") && (
+                type_context || (
+                    previous >= 0 && tokens.*[previous].prefix && prev_text.starts_with("*") && fmt_pointer_operator(
+                        prev_text
+                    )
+                )
+            ) {
                 operand = true;
+                type_context = true;
             } else operand = false;
             if (text == ".." || text == "..=") && !was_operand space = false;
         }
@@ -345,7 +377,12 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
                 && !token.lambda_parameter writer.pending = true;
         } else if text == "}" && tokens.*[token.pair].block {
             next := i + 1;
-            if next < tokens.*.count && fmt_after_block(tokens.*[next].text, tokens.*[next].kind) writer.pending = true;
+            if next < tokens.*.count && (
+                tokens.*[next].type_head_start || fmt_after_block(
+                    tokens.*[next].text,
+                    tokens.*[next].kind
+                )
+            ) writer.pending = true;
         }
         // Keep computing layout while output is disabled, including delimiter
         // and match-arm depth. Resume with the original bytes through the on

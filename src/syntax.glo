@@ -16,6 +16,7 @@
         prefix: bool;
         suffix: bool;
         binary: bool;
+        type_head_start: bool;
         type_context: bool;
         operand_context: bool;
         lambda_open: bool;
@@ -25,6 +26,7 @@
         arm_header: bool;
         arm_body: bool;
         type_array: bool;
+        cast_type: bool;
         block: bool;
         multiline: bool;
         hardline: bool;
