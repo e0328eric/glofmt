@@ -17,8 +17,9 @@ Fmt_Writer :: struct {
     pending: bool;
     blank_pending: bool;
     continuation: bool;
-    // Braceless if conditions continue a level deeper than their bodies.
-    wide_continuation: bool;
+    // Braceless if conditions continue under their first token, this many
+    // columns past the line's indentation; 0 elsewhere.
+    condition_align: ssize;
     control_header: bool;
     disabled_start: ssize = -1;
 }
@@ -39,16 +40,19 @@ fmt_blank_line :: (writer: *Fmt_Writer) {
 fmt_write :: (writer: *Fmt_Writer, text: str, space: bool, extra_indent: ssize = 0) {
     if writer.line_start {
         depth := writer.depth + extra_indent;
-        if writer.continuation depth += 1;
-        if writer.continuation && writer.wide_continuation depth += 1;
+        align: ssize = 0;
+        if      writer.continuation && writer.condition_align > 0 align = writer.condition_align;
+        else if writer.continuation                               depth += 1;
         if writer.disabled_start < 0 {
             if writer.tabs {
                 for 0..depth writer.out.write_byte(#char "\t");
             } else {
                 for 0..depth * writer.indent writer.out.write_byte(#char " ");
             }
+            // Tabs indent; spaces align.
+            for 0..align writer.out.write_byte(#char " ");
         }
-        writer.column = depth * writer.indent;
+        writer.column = depth * writer.indent + align;
         writer.line_start = false;
     } else if space {
         if writer.disabled_start < 0 writer.out.write_byte(#char " ");
@@ -56,7 +60,7 @@ fmt_write :: (writer: *Fmt_Writer, text: str, space: bool, extra_indent: ssize =
     }
     if writer.disabled_start < 0 writer.out.write_string(text);
     for byte: text.bytes() {
-        if byte == #char "\n" writer.column = 0;
+        if      byte == #char "\n"        writer.column = 0;
         else if byte < 128 || byte >= 192 writer.column += 1;
     }
 }
@@ -106,8 +110,8 @@ fmt_spaced_reading :: (
     before := previous >= 0 && tokens[previous].end < tokens[at].start;
     after := tokens[at].end < tokens[next].start;
     if !before && !after && op.binary return "binary";
-    if !before return "suffix";
-    if !after && op.prefix return "prefix";
+    if !before                        return "suffix";
+    if !after && op.prefix            return "prefix";
     return "binary";
 }
 fmt_symbolic :: (token: *Fmt_Token) -> bool {
@@ -172,13 +176,15 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             prev_kind = tokens.*[previous].kind;
         }
         space := previous >= 0;
-        if text == "," || text == ",," || text == ";" || text == ":" || fmt_close(text) space = false;
-        if prev_text == "(" || prev_text == "[" || prev_text == ".[" || prev_text == "."
-            || prev_text == "$" || prev_text == "`" || prev_text == "``" space = false;
+        if text == "," || text == ",," || text == ";" || text == ":" || fmt_close(text)
+            space = false;
+        if prev_text == "(" || prev_text == "[" || prev_text == ".[" || prev_text == "." ||
+           prev_text == "$" || prev_text == "`" || prev_text == "``"
+            space = false;
         if previous >= 0 {
             prev := &tokens.*[previous];
-            if prev.prefix && (fmt_symbolic(prev) || prev.text == "...") space = false;
-            if prev.text == ".." || prev.text == "..=" space = false;
+            if prev.prefix && (fmt_symbolic(prev) || prev.text == "...")            space = false;
+            if prev.text == ".." || prev.text == "..="                              space = false;
             if prev.text == "]" && prev.pair >= 0 && tokens.*[prev.pair].type_array space = false;
             // Modifier commas are neither expression nor list separators.
             // Follow chains such as #string,oneline,escape across comments.
@@ -220,8 +226,9 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         } else if fmt_open(text) {
             if text == "(" {
                 // Keep parenthesized cast operands attached: cast(T)(value).
-                if !operand || prev_kind == "Directive" || prev_text == "cast"
-                    || (previous >= 0 && tokens.*[previous].cast_type) space = false;
+                if !operand || prev_kind == "Directive" || prev_text == "cast" ||
+                   (previous >= 0 && tokens.*[previous].cast_type)
+                    space = false;
                 token.cast_type = prev_text == "cast";
                 type_context = token.cast_type;
             } else if text == "[" {
@@ -238,7 +245,7 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             // cast(T) still needs its operand; a following '&' is a prefix.
             token.cast_type = open.cast_type;
             operand = open.type_array || token.cast_type;
-            if open.type_array type_context = true;
+            if open.type_array                                        type_context = true;
             if text == "}" && open.text == ".{" && token.pair + 1 < i space = true;
         } else if text == ":" || text == "->" {
             operand = true;
@@ -265,7 +272,8 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             op := fmt_operator(ops, text);
             next := fmt_next_code(tokens.view(), i + 1);
             boundary := next == tokens.*.count;
-            if !boundary boundary = fmt_close(tokens.*[next].text) || tokens.*[next].text == "," || tokens.*[next].text == ";";
+            if !boundary
+                boundary = fmt_close(tokens.*[next].text) || tokens.*[next].text == "," || tokens.*[next].text == ";";
             if token.kind == "OpName" && next < tokens.*.count && tokens.*[next].text == "::" {
                 operand = false;
             } else if !operand && text == "!" {
@@ -311,12 +319,17 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
         }
         // Don't merge separate operators into a custom operator or comment.
         // '?' is always separate punctuation in the Glosso lexer.
-        if previous >= 0 && prev_kind == "Op" && token.kind == "Op"
-            && prev_text != "?" && text != "?" space = true;
+        if previous >= 0 && prev_kind == "Op" &&
+           token.kind == "Op" && prev_text != "?" && text != "?"
+            space = true;
         // Literal prefixes are adjacency-sensitive despite identical tokens.
-        if previous >= 0 && tokens.*[previous].end == token.start && prev_kind == "Ident"
-            && (token.kind == "Str" || token.kind == "MlStr" || text == "#string") space = false;
-        if i > 0 && fmt_comment(tokens.*[i - 1].kind) && !fmt_close(text) && text != "," && text != ";" space = true;
+        if previous >= 0 && tokens.*[previous].end == token.start && prev_kind == "Ident" &&
+           (token.kind == "Str" || token.kind == "MlStr" || text == "#string")
+            space = false;
+        if i > 0 &&
+           fmt_comment(tokens.*[i - 1].kind) && !fmt_close(text) &&
+           text != "," && text != ";"
+            space = true;
         token.space = space;
         previous = i;
     }
@@ -345,7 +358,7 @@ fmt_measure :: (tokens: *[..]Fmt_Token) {
             "\n"
         );
         if !fmt_open(token.text) continue;
-        if token.block token.visibility_group = fmt_visibility_group(tokens.view(), i);
+        if token.block           token.visibility_group = fmt_visibility_group(tokens.view(), i);
         end := token.pair;
         if token.block && end > i + 1 token.hardline = true;
         last := fmt_previous_code(tokens.view(), end - 1);
@@ -357,7 +370,7 @@ fmt_measure :: (tokens: *[..]Fmt_Token) {
             token.flat_width += child.flat_width;
             if child.hardline token.hardline = true;
             if fmt_open(child.text) at = child.pair + 1;
-            else at += 1;
+            else                    at += 1;
         }
     }
 }
@@ -378,7 +391,7 @@ fmt_chain_root :: (tokens: []Fmt_Token, dot: ssize) -> ssize {
         token := &tokens[at];
         if fmt_close(token.text) {
             open := token.pair;
-            if tokens[open].text == "{" return -1;
+            if tokens[open].text == "{"          return -1;
             if !fmt_postfix_group(&tokens[open]) return open;
             at = fmt_previous_code(tokens, open - 1);
         } else if token.suffix {
@@ -417,16 +430,16 @@ fmt_chains :: (source: str, tokens: *[..]Fmt_Token) {
         at := i;
         while at < tokens.*.count && fmt_member_dot(&tokens.*[at]) {
             name := fmt_next_code(tokens.view(), at + 1);
-            if name >= tokens.*.count break;
+            if name >= tokens.*.count                                          break;
             if fmt_open(tokens.*[name].text) || fmt_close(tokens.*[name].text) break;
             element_end := name;
             next := fmt_next_code(tokens.view(), name + 1);
             call := next < tokens.*.count && tokens.*[next].text == "("
                 && fmt_postfix_group(&tokens.*[next]);
             while next < tokens.*.count {
-                if fmt_postfix_group(&tokens.*[next]) element_end = tokens.*[next].pair;
-                else if tokens.*[next].suffix element_end = next;
-                else break;
+                if      fmt_postfix_group(&tokens.*[next]) element_end = tokens.*[next].pair;
+                else if tokens.*[next].suffix              element_end = next;
+                else                                       break;
                 next = fmt_next_code(tokens.view(), element_end + 1);
             }
             if call {
@@ -450,7 +463,7 @@ fmt_chains :: (source: str, tokens: *[..]Fmt_Token) {
             if at > root && child.space width += 1;
             width += child.flat_width;
             if fmt_open(child.text) at = child.pair + 1;
-            else at += 1;
+            else                    at += 1;
         }
         after := fmt_next_code(tokens.view(), end + 1);
         if after < tokens.*.count && (tokens.*[after].text == ";" || tokens.*[after].text == ",")
@@ -465,7 +478,7 @@ fmt_chains :: (source: str, tokens: *[..]Fmt_Token) {
                     head.chain_vertical = true;
             }
             if fmt_open(tokens.*[at].text) at = tokens.*[at].pair + 1;
-            else at += 1;
+            else                           at += 1;
         }
     }
 }
@@ -502,7 +515,7 @@ fmt_if_arm :: (source: str, tokens: []Fmt_Token, keyword: ssize) -> Fmt_If_Arm {
         kind := token.kind;
         if fmt_comment(kind) || token.hardline || token.block || token.format_disabled return arm;
         nested := kind == "If" || kind == "Ifx" || kind == "Else" || kind == "For" || kind == "While";
-        if nested || kind == "Case" || token.text == "#if" return arm;
+        if nested || kind == "Case" || token.text == "#if"           return arm;
         if fmt_newlines(source[tokens[at - 1].end..token.start]) > 0 arm.newline = true;
         // The condition ends where a statement starts after a complete operand.
         if arm.body < 0 && (arm.condition < 0 || (at > arm.condition && !token.operand_context)) {
@@ -534,9 +547,10 @@ fmt_if_condition_column :: (head: *Fmt_Token) -> ssize {
 fmt_if_body_column :: (head: *Fmt_Token) -> ssize {
     return fmt_if_condition_column(head) + head.if_condition_width + 1;
 }
-// Overflowing conditions break before their loosest logical operator at the
+// Overflowing conditions break after their loosest logical operator at the
 // top level: `||` binds looser than `&&` in the Prelude. Each such operator
-// records the width up to the next one, or to the end of the condition.
+// records the width of what follows it through the next one, which ends that
+// line, or to the end of the condition.
 fmt_if_condition_breaks :: (tokens: *[..]Fmt_Token, head: ssize, first: ssize, stop: ssize) {
     operator := "&&";
     at := first;
@@ -550,9 +564,15 @@ fmt_if_condition_breaks :: (tokens: *[..]Fmt_Token, head: ssize, first: ssize, s
     while at <= stop {
         if at == stop || (tokens.*[at].binary && tokens.*[at].text == operator) {
             if previous >= 0 {
+                segment_end := stop;
+                if at < stop segment_end = at + 1;
                 tokens.*[previous].if_chain = head;
                 tokens.*[previous].if_break = true;
-                tokens.*[previous].if_segment = fmt_flat_span(tokens.view(), previous, at);
+                tokens.*[previous].if_segment = fmt_flat_span(
+                    tokens.view(),
+                    previous + 1,
+                    segment_end
+                );
             }
             if at == stop return;
             previous = at;
@@ -579,13 +599,14 @@ fmt_if_chain :: (source: str, tokens: *[..]Fmt_Token, head: ssize, mark: bool) -
             }
             if keyword == head tokens.*[arm.condition].if_align = fmt_if_condition_column(first);
             tokens.*[arm.body].if_chain = head;
-            tokens.*[arm.body].if_align = fmt_if_body_column(first);
             tokens.*[arm.body].if_body = true;
             tokens.*[arm.end].if_chain = head;
             tokens.*[arm.end].if_body_end = true;
         } else {
             condition := arm.condition_width;
-            if arm.newline first.if_newline = true;
+            first.if_arms += 1;
+            first.if_end = arm.end;
+            if arm.newline                          first.if_newline = true;
             if condition > first.if_condition_width first.if_condition_width = condition;
             if arm.body_width > first.if_body_width first.if_body_width = arm.body_width;
         }
@@ -594,7 +615,7 @@ fmt_if_chain :: (source: str, tokens: *[..]Fmt_Token, head: ssize, mark: bool) -
         if next >= view.count || view[next].kind != "Else" return true;
         after := fmt_next_code(view, next + 1);
         // `else;` is the default arm of an enclosing case block.
-        if after < view.count && view[after].text == ";" return true;
+        if after < view.count && view[after].text == ";"                   return true;
         if next != arm.end + 1 || after != next + 1 || after >= view.count return false;
         keyword = next;
         if view[after].kind == "If" {
@@ -612,10 +633,17 @@ fmt_if_chain :: (source: str, tokens: *[..]Fmt_Token, head: ssize, mark: bool) -
 // bodies into columns; otherwise every body takes its own line, indented. A
 // line break inside any arm also requests that layout. A lone `if` is a
 // one-arm chain, so its body joins the condition only while the line fits.
-fmt_if_chains :: (source: str, tokens: *[..]Fmt_Token) {
+// A lone `if` directly followed by another, with no blank line or comment
+// between them, may share its body column (see fmt_if_group). When disabled,
+// no chain is marked and every `if` keeps the ordinary layout.
+fmt_if_chains :: (source: str, tokens: *[..]Fmt_Token, enabled: bool) {
     for i: 0..tokens.*.count {
         token := &tokens.*[i];
         token.if_chain = -1;
+        token.if_next = -1;
+        token.if_end = -1;
+        token.if_arms = 0;
+        token.if_grouped = false;
         token.if_align = 0;
         token.if_condition = false;
         token.if_break = false;
@@ -629,9 +657,10 @@ fmt_if_chains :: (source: str, tokens: *[..]Fmt_Token) {
         token.if_column = 0;
         token.if_table = false;
     }
+    if !enabled return;
     for i: 0..tokens.*.count {
         token := &tokens.*[i];
-        if token.kind != "If" || token.format_disabled continue;
+        if token.kind != "If" || token.format_disabled        continue;
         if token.parent >= 0 && !tokens.*[token.parent].block continue;
         // Chains start at statements, not at `else if` arms or nested bodies.
         previous := fmt_previous_code(tokens.view(), i - 1);
@@ -642,6 +671,49 @@ fmt_if_chains :: (source: str, tokens: *[..]Fmt_Token) {
         if !fmt_if_chain(source, tokens, i, false) continue;
         token.if_chain = i;
         _ = fmt_if_chain(source, tokens, i, true);
+    }
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        if token.if_chain != i || token.if_arms != 1 continue;
+        next := token.if_end + 1;
+        if next >= tokens.*.count continue;
+        following := &tokens.*[next];
+        if following.if_chain != next || following.if_arms != 1                  continue;
+        if fmt_newlines(source[tokens.*[token.if_end].end..following.start]) > 1 continue;
+        token.if_next = next;
+    }
+}
+// Consecutive lone ifs from `head` share one body column while their aligned
+// lines fit the width. A member with a line break, or one that would push the
+// shared columns past the width, ends the group; it can start the next one.
+fmt_if_group :: (tokens: *[..]Fmt_Token, head: ssize, width: ssize) {
+    first := &tokens.*[head];
+    start := first.if_column + fmt_if_condition_column(first);
+    condition := first.if_condition_width;
+    body := first.if_body_width;
+    last := head;
+    next := first.if_next;
+    while next >= 0 {
+        member := &tokens.*[next];
+        if member.if_newline break;
+        wider_condition := condition;
+        wider_body := body;
+        if member.if_condition_width > wider_condition wider_condition = member.if_condition_width;
+        if member.if_body_width > wider_body           wider_body = member.if_body_width;
+        if start + wider_condition + 1 + wider_body > width break;
+        condition = wider_condition;
+        body = wider_body;
+        last = next;
+        next = member.if_next;
+    }
+    at := head;
+    while at >= 0 {
+        member := &tokens.*[at];
+        member.if_grouped = true;
+        member.if_table = true;
+        member.if_condition_width = condition;
+        if at == last break;
+        at = member.if_next;
     }
 }
 
@@ -664,8 +736,13 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         text := token.text;
         gap := source[previous_end..token.start];
         lines := fmt_newlines(gap);
+        // A break around a breakable condition operator moves after it.
+        break_before := false;
+        if token.if_break && !tokens.*[token.if_chain].if_table {
+            break_before = lines > 0;
+            lines = 0;
+        }
         if i > 0 && tokens.*[i - 1].if_break {
-            // A break after a breakable condition operator moves before it.
             if !tokens.*[tokens.*[i - 1].if_chain].if_table lines = 0;
         }
         comment := fmt_comment(token.kind);
@@ -707,21 +784,24 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         if i > 0 && lines > 0 {
             prev := &tokens.*[i - 1];
             if in_block && !comment && !fmt_close(text) && text != "{" && text != "else" {
-                if token.binary || prev.binary || prev.text == ":=" || prev.text == "=" || prev.text == "::"
-                    || (member && !chain_dot) writer.continuation = true;
-                if writer.control_header && !token.operand_context
-                    && (
-                        token.kind == "Ident" || token.kind == "Return" || token.kind == "Break" || token.kind == "Continue"
-                    )
+                if token.binary || prev.binary || prev.text == ":=" || prev.text == "=" ||
+                   prev.text == "::" ||
+                   (member && !chain_dot)
+                    writer.continuation = true;
+                if writer.control_header && !token.operand_context &&
+                   (
+                       token.kind == "Ident" || token.kind == "Return" || token.kind == "Break" || token.kind == "Continue"
+                   )
                     writer.continuation = true;
             }
-            if (in_block || comment || prev.kind == "LineComment" || token.kind == "MlStr")
-                && !fmt_close(text) && text != "{" && text != "else" && text != ";" && text != ","
-                && !fmt_open(prev.text) && !chain_dot fmt_newline(&writer);
-            if lines > 1 && !fmt_close(text) && text != "else" && text != "{" && in_block
-                && (prev.text == ";" || prev.text == "}" || fmt_comment(prev.kind)) fmt_blank_line(
-                    &writer
-                );
+            if (in_block || comment || prev.kind == "LineComment" || token.kind == "MlStr") &&
+               !fmt_close(text) && text != "{" && text != "else" && text != ";" &&
+               text != "," &&
+               !fmt_open(prev.text) && !chain_dot
+                fmt_newline(&writer);
+            if lines > 1 && !fmt_close(text) && text != "else" && text != "{" && in_block &&
+               (prev.text == ";" || prev.text == "}" || fmt_comment(prev.kind))
+                fmt_blank_line(&writer);
         }
         if token.kind == "MlStr" fmt_newline(&writer);
         if text == "{" || text == "else" || token.kind == "Case" {
@@ -741,46 +821,56 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         // join the root while its line ends left of the elements' indentation.
         if chain_dot && tokens.*[token.chain].chain_vertical {
             head := &tokens.*[token.chain];
-            indentation := writer.depth;
-            if writer.continuation indentation += 1;
-            if writer.continuation && writer.wide_continuation indentation += 1;
-            joins := head.chain_indented && writer.column <= indentation * writer.indent;
+            indentation := writer.depth * writer.indent;
+            if writer.continuation && writer.condition_align > 0
+                indentation += writer.condition_align;
+            else if writer.continuation
+                indentation += writer.indent;
+            joins := head.chain_indented && writer.column <= indentation;
             if head.chain_broken || !joins {
                 fmt_newline(&writer);
                 head.chain_broken = true;
             }
         }
-        // Aligned chains pad to their columns. Other chains put each body on
-        // its own line one level deep, and a condition that overflows breaks
-        // before its loosest logical operators, two levels deep.
+        // Aligned chains pad to their columns; a group of lone ifs shares the
+        // body column. Other chains put each body on its own line one level
+        // deep, and a condition that overflows breaks after its loosest
+        // logical operators, continuing under the condition's first token.
         aligned := false;
         if token.if_chain >= 0 && token.if_chain != i {
             head := &tokens.*[token.if_chain];
             if head.if_table {
-                if token.if_align > 0 && !writer.line_start {
-                    fmt_pad(&writer, head.if_column + token.if_align - writer.column);
+                align := token.if_align;
+                if token.if_body align = fmt_if_body_column(head);
+                if align > 0 && !writer.line_start {
+                    fmt_pad(&writer, head.if_column + align - writer.column);
                     aligned = true;
                 }
             } else if token.if_body {
                 writer.continuation = false;
-                writer.wide_continuation = false;
+                writer.condition_align = 0;
                 fmt_newline(&writer);
                 writer.depth += 1;
-            } else if token.if_condition {
-                writer.wide_continuation = true;
-            } else if token.if_break && !writer.line_start {
-                after := fmt_newlines(source[token.end..tokens.*[i + 1].start]) > 0;
-                if after || writer.column + 1 + token.if_segment > width {
-                    writer.continuation = true;
-                    fmt_newline(&writer);
-                }
             }
         }
         fmt_write(&writer, text, token.space && !aligned, extra);
         if token.if_chain == i {
             token.if_column = writer.column - fmt_width(text);
-            token.if_table = !token.if_newline
-                && token.if_column + fmt_if_body_column(token) + token.if_body_width <= width;
+            if !token.if_grouped {
+                token.if_table = !token.if_newline
+                    && token.if_column + fmt_if_body_column(token) + token.if_body_width <= width;
+                if token.if_table fmt_if_group(tokens, i, width);
+            }
+        } else if token.if_chain >= 0 && !tokens.*[token.if_chain].if_table {
+            if token.if_condition {
+                writer.condition_align = writer.column - fmt_width(text) - writer.depth * writer.indent;
+            } else if token.if_break {
+                after := fmt_newlines(source[token.end..tokens.*[i + 1].start]) > 0;
+                if break_before || after || writer.column + 1 + token.if_segment > width {
+                    writer.continuation = true;
+                    fmt_newline(&writer);
+                }
+            }
         }
         if fmt_open(text) {
             nonempty := token.pair > i + 1;
@@ -806,21 +896,25 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             if in_block {
                 writer.pending = true;
                 writer.continuation = false;
-                writer.wide_continuation = false;
+                writer.condition_align = 0;
                 writer.control_header = false;
             } else if token.parent >= 0 && tokens.*[token.parent].text == ".[" && tokens.*[token.parent].multiline writer.pending = true;
             if token.if_body_end && !tokens.*[token.if_chain].if_table writer.depth -= 1;
         } else if text == "," || text == ",," {
-            if token.parent >= 0 && tokens.*[token.parent].multiline && !tokens.*[token.parent].block
-                && !token.lambda_parameter && !token.directive_modifier writer.pending = true;
+            if token.parent >= 0 && tokens.*[token.parent].multiline &&
+               !tokens.*[token.parent].block &&
+               !token.lambda_parameter && !token.directive_modifier
+                writer.pending = true;
         } else if text == "}" && tokens.*[token.pair].block {
             next := i + 1;
-            if next < tokens.*.count && (
-                tokens.*[next].type_head_start || fmt_after_block(
-                    tokens.*[next].text,
-                    tokens.*[next].kind
-                )
-            ) writer.pending = true;
+            if next < tokens.*.count &&
+               (
+                   tokens.*[next].type_head_start || fmt_after_block(
+                       tokens.*[next].text,
+                       tokens.*[next].kind
+                   )
+               )
+                writer.pending = true;
         }
         // Chains inside a group break only once the group itself has.
         if token.chain_width > 0 && !token.chain_vertical {
@@ -856,7 +950,7 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         previous_end = token.end;
     }
     if writer.disabled_start >= 0 writer.out.write_string(source[writer.disabled_start..]);
-    else fmt_newline(&writer);
+    else                          fmt_newline(&writer);
     return value_take(&writer.out).into_string();
 }
 
@@ -867,7 +961,9 @@ fmt_verified :: (formatted: str, tokens: []Fmt_Token) -> bool {
     at: ssize = 0;
     for token: scanned.tokens.view() {
         if fmt_trivia(token.kind) continue;
-        if at >= tokens.count || tokens[at].kind != token.kind || tokens[at].text != formatted[token.start..token.end] return false;
+        if at >= tokens.count || tokens[at].kind != token.kind ||
+           tokens[at].text != formatted[token.start..token.end]
+            return false;
         at += 1;
     }
     return at == tokens.count;
@@ -879,11 +975,12 @@ fmt_checked_layout :: (
     tokens: *[..]Fmt_Token,
     indent: ssize,
     tabs: bool,
-    width: ssize
+    width: ssize,
+    format_braceless_if: bool
 ) -> str {
     fmt_measure(tokens);
     fmt_chains(source, tokens);
-    fmt_if_chains(source, tokens);
+    fmt_if_chains(source, tokens, format_braceless_if);
     formatted := fmt_layout(source, tokens, indent, tabs, width);
     if fmt_verified(formatted, tokens.view()) return formatted;
     formatted.free();
@@ -897,6 +994,7 @@ fmt_checked_layout :: (
     width: ssize = 100,
     source_path: str = "",
     std_directory: str = GLOSSO_STANDARD_DIRECTORY,
+    format_braceless_if: bool = true,
 ) -> str {
     scanned := glosso_tokens(source);
     defer scanned.free();
@@ -914,16 +1012,18 @@ fmt_checked_layout :: (
     }
     normalized := fmt_normalize_operators(source, original.view(), &ops);
     defer normalized.free();
-    if indent < 1 || indent > 16 indent = 4;
+    if indent < 1 || indent > 16  indent = 4;
     if width < 20 || width > 1000 width = 100;
-    if normalized == source return fmt_checked_layout(
-        source,
-        source,
-        &original,
-        indent,
-        tabs,
-        width
-    );
+    if normalized == source
+        return fmt_checked_layout(
+            source,
+            source,
+            &original,
+            indent,
+            tabs,
+            width,
+            format_braceless_if
+        );
     normalized_scan := glosso_tokens(normalized);
     defer normalized_scan.free();
     if !normalized_scan.success return source.clone();
@@ -931,5 +1031,5 @@ fmt_checked_layout :: (
     defer tokens.free();
     if !fmt_pairs(&tokens) return source.clone();
     fmt_spacing(&tokens, &ops);
-    return fmt_checked_layout(normalized, source, &tokens, indent, tabs, width);
+    return fmt_checked_layout(normalized, source, &tokens, indent, tabs, width, format_braceless_if);
 }

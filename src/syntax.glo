@@ -48,11 +48,17 @@ Fmt_Token :: struct {
     chain_broken: bool;
     // Braceless if/else chains: the first `if` holds the chain's facts and
     // layout state; each arm's first condition and body tokens, the logical
-    // operators its condition may break before, and each body's `;` refer
-    // back to it. `if_align` is a column offset from the chain's `if`,
-    // applied when the arms form aligned columns. `if_segment` is the flat
-    // width from a breakable operator to the next one or the condition's end.
+    // operators its condition may break after, and each body's `;` refer
+    // back to it. `if_align` is the first condition's column offset from the
+    // chain's `if`, applied when the arms form aligned columns. `if_segment`
+    // is the flat width after a breakable operator through the next one, or
+    // to the condition's end. A lone `if` links to a lone `if` right after it
+    // through `if_next`; `if_grouped` marks one whose layout its group set.
     if_chain: ssize = -1;
+    if_next: ssize = -1;
+    if_end: ssize = -1;
+    if_arms: ssize;
+    if_grouped: bool;
     if_align: ssize;
     if_condition: bool;
     if_break: bool;
@@ -103,8 +109,8 @@ fmt_tokens :: (source: str, scanned: *Glosso_Tokens) -> [..]Fmt_Token {
         text := source[token.start..token.end];
         if token.kind == "LineComment" {
             directive := text[2..].trim();
-            if directive == "glofmt: off" disabled = true;
-            else if directive == "glofmt: on" disabled = false;
+            if      directive == "glofmt: off" disabled = true;
+            else if directive == "glofmt: on"  disabled = false;
         }
         result.push(
             .{

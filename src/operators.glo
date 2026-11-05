@@ -34,7 +34,8 @@ Fmt_Operators ::: #public {
 }
 
 #public fmt_operator_name :: (text: str) -> str {
-    if text.count >= 2 && text.starts_with("'") && text.ends_with("'") return text[1..text.count - 1];
+    if text.count >= 2 && text.starts_with("'") && text.ends_with("'")
+        return text[1..text.count - 1];
     return text;
 }
 #public fmt_pointer_operator :: (text: str) -> bool {
@@ -63,8 +64,8 @@ fmt_add_operator :: (ops: *Fmt_Operators, name: str, mode: str) {
         at = ops.entries.count;
         ops.entries.push(.{ .name = name.clone() });
     }
-    if mode == "prefix" ops.entries[at].prefix = true;
-    else if mode == "suffix" ops.entries[at].suffix = true;
+    if      mode == "prefix"                                      ops.entries[at].prefix = true;
+    else if mode == "suffix"                                      ops.entries[at].suffix = true;
     else if mode == "left" || mode == "right" || mode == "assign" ops.entries[at].binary = true;
 }
 
@@ -141,7 +142,7 @@ fmt_add_operator :: (ops: *Fmt_Operators, name: str, mode: str) {
         token := &tokens[i];
         // These can introduce declarations that a static formatter cannot see.
         if token.text == "#insert" || token.text == "#load_module" ops.complete = false;
-        if token.kind != "OpName" continue;
+        if token.kind != "OpName"                                  continue;
         colon := fmt_next_code(tokens, i + 1);
         if colon >= tokens.count || tokens[colon].text != "::" continue;
         params := fmt_next_code(tokens, colon + 1);
@@ -175,19 +176,19 @@ fmt_module_candidate :: (base: str, name: str) -> str {
         defer extended.free();
         extended.write_string(path);
         extended.write_string(".glo");
-        if is_regular_file(extended.to_string()).unwrap_or(false) return value_take(&extended).into_string();
+        if is_regular_file(extended.to_string()).unwrap_or(false)
+            return value_take(&extended).into_string();
     }
     return "".clone();
 }
 fmt_resolve_import :: (name: str, source_path: str, std_directory: str) -> str {
     // Match source imports versus named std modules; don't guess from CWD for
     // a named module, since that could hide an unresolved custom operator.
-    if name.starts_with("./") || name.starts_with("../") || path_is_absolute(name) || name.ends_with(
-        ".glo"
-    )
+    if name.starts_with("./") || name.starts_with("../") || path_is_absolute(name) ||
+       name.ends_with(".glo")
         return fmt_module_candidate(path_dirname(source_path), name);
     if std_directory.count == 0 return "".clone();
-    if name == "Math" return fmt_module_candidate(std_directory, "Math/Core");
+    if name == "Math"           return fmt_module_candidate(std_directory, "Math/Core");
     return fmt_module_candidate(std_directory, name);
 }
 fmt_read_operators :: (ops: *Fmt_Operators, path: str, std_directory: str, depth: ssize) {
@@ -264,17 +265,18 @@ fmt_declared :: (ops: *Fmt_Operators, text: str) -> bool {
     for i: 0..tokens.count {
         token := &tokens[i];
         if token.kind != "Op" && token.kind != "OpName" continue;
-        if token.text == "---" || token.text == "@" || token.text == "||->" || token.text == "||" || token.text == "|" continue;
+        if token.text == "---" || token.text == "@" || token.text == "||->" || token.text == "||" ||
+           token.text == "|"
+            continue;
         if !fmt_declared(ops, token.text) return true;
         next := fmt_next_code(tokens, i + 1);
         if next < tokens.count && tokens[next].text == "::" continue;
         op := fmt_operator(ops, token.text);
         // Imports can add a new fixity to a spelling already in the Prelude.
         if token.operand_context && !op.prefix return true;
-        if !token.operand_context && !op.suffix && next < tokens.count
-            && (
-                fmt_close(tokens[next].text) || tokens[next].text == ";" || tokens[next].text == ","
-            ) return true;
+        if !token.operand_context && !op.suffix && next < tokens.count &&
+           (fmt_close(tokens[next].text) || tokens[next].text == ";" || tokens[next].text == ",")
+            return true;
     }
     return false;
 }

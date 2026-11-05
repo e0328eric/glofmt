@@ -86,9 +86,11 @@ On Linux and FreeBSD this is `$XDG_CONFIG_HOME/glofmt/config.toml`, falling back
 to `$HOME/.config/glofmt/config.toml` if `XDG_CONFIG_HOME` is unset, empty, or
 relative. On macOS it is `~/Library/Application Support/glofmt/config.toml`;
 on Windows it is `glofmt/config.toml` under the Roaming AppData known folder.
-The config file is optional; a missing file or omitted `width` keeps the default.
-Other keys are ignored. Invalid TOML, an unreadable config file, or a `width`
-that is not an integer from 20 through 1000 returns 2 before formatting.
+The config file is optional; a missing file or omitted key keeps the default.
+`format_braceless_if = false` turns off the braceless `if` layout described
+below (default `true`). Other keys are ignored. Invalid TOML, an unreadable
+config file, a `width` that is not an integer from 20 through 1000, or a
+`format_braceless_if` that is not `true` or `false` returns 2 before formatting.
 
 `--width=N` overrides the configured width and accepts the same range.
 Configuration is still validated when the flag is supplied; `--help` and
@@ -160,20 +162,34 @@ else
     r.width = 80;
 ```
 
-A condition that still overflows breaks before its top-level `||` operators,
-or before `&&` when it has no top-level `||`, filling each line as far as the
-width allows. Its continuation lines indent two levels, so the body, one
-level deep, stands apart; with a 4-column indent, `else if` conditions line
-up. A line break after one of these operators moves before it:
+Consecutive lone `if` statements line up their bodies the same way while the
+aligned lines fit. A blank line or comment ends the group, as does an `if`
+that takes more than one line or would push the aligned lines past the width;
+the latter starts the next group:
 
 ```glosso
-else if lines > 1 && !fmt_close(text) && text != "else" && text != "{" && in_block
-        && (prev.text == ";" || prev.text == "}" || fmt_comment(prev.kind))
-    fmt_blank_line(&writer);
+if prev.prefix && (fmt_symbolic(prev) || prev.text == "...")            space = false;
+if prev.text == ".." || prev.text == "..="                              space = false;
+if prev.text == "]" && prev.pair >= 0 && tokens.*[prev.pair].type_array space = false;
+```
+
+A condition that still overflows breaks after its top-level `||` operators,
+or after `&&` when it has no top-level `||`, filling each line as far as the
+width allows. Continuation lines line up under the condition's first token
+(after `if ` or `else if `; with `--tabs`, tabs indent and spaces align), and
+the body stays one level deep. A line break before one of these operators
+moves after it:
+
+```glosso
+if prev_text == "(" || prev_text == "[" || prev_text == ".[" || prev_text == "." ||
+   prev_text == "$" || prev_text == "`" || prev_text == "``"
+    space = false;
 ```
 
 Chains with a braced arm, a comment between arms, or a nested control-flow
-body keep the ordinary layout.
+body keep the ordinary layout. With `format_braceless_if = false` in the
+config, every braceless `if` keeps it: tokens are spaced as usual, but bodies
+and conditions keep their existing line breaks and are never aligned or broken.
 
 Use `// glofmt: off` and `// glofmt: on` to preserve manual formatting:
 

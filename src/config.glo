@@ -7,7 +7,14 @@
 #import "Serialization/Toml";
 #import "Strings";
 
-fmt_config_error :: (path: str, message: str) -> ?ssize {
+#public Fmt_Config :: struct {
+    width: ssize = 100;
+    // false leaves braceless if/else chains to the ordinary layout, which
+    // keeps their line breaks, instead of aligning or breaking them.
+    format_braceless_if: bool = true;
+}
+
+fmt_config_error :: (path: str, message: str) -> ?Fmt_Config {
     error := File.stderr();
     _ = error.write(tprint("glofmt: {}: {}\n", path, message));
     return null;
@@ -15,11 +22,12 @@ fmt_config_error :: (path: str, message: str) -> ?ssize {
 
 // Missing configuration uses the default; failures are reported before input
 // is read or any source file can be replaced.
-#public fmt_config_width :: () -> ?ssize {
+#public fmt_config :: () -> ?Fmt_Config {
+    config: Fmt_Config;
     directory: Path;
     if get_config_dir() == {
     case null;
-        return ?100;
+        return ?config;
     case ?path;
         directory = path;
     }
@@ -34,7 +42,7 @@ fmt_config_error :: (path: str, message: str) -> ?ssize {
     case .Ok(file);
         input = file;
     case .Err(failure);
-        if failure.kind == .Not_Found return ?100;
+        if failure.kind == .Not_Found return ?config;
         return fmt_config_error(path, failure.kind.reason());
     }
     defer input.close();
@@ -60,13 +68,25 @@ fmt_config_error :: (path: str, message: str) -> ?ssize {
     defer document.destroy();
     if document.root.field_value("width") == {
     case null;
-        return ?100;
     case ?value;
+        valid := false;
         if deserialize(ssize, value) == {
         case .Ok(width);
-            if width >= 20 && width <= 1000 return ?width;
+            config.width = width;
+            valid = width >= 20 && width <= 1000;
         case .Err;
         }
+        if !valid return fmt_config_error(path, "width must be an integer from 20 through 1000");
     }
-    return fmt_config_error(path, "width must be an integer from 20 through 1000");
+    if document.root.field_value("format_braceless_if") == {
+    case null;
+    case ?value;
+        if deserialize(bool, value) == {
+        case .Ok(enabled);
+            config.format_braceless_if = enabled;
+        case .Err;
+            return fmt_config_error(path, "format_braceless_if must be true or false");
+        }
+    }
+    return ?config;
 }

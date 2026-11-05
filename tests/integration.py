@@ -823,33 +823,69 @@ outside :: 1;
             }
             ''', '--width=60')
 
-    def test_braceless_if_conditions_break_before_loosest_logical_operator(self):
+    def test_braceless_if_conditions_break_after_loosest_logical_operator(self):
         self.assert_format(
             'main::(){if alpha_value>0&&beta_value>0&&gamma_value>0 return;'
-            'if a x=1;else if first_value&&second_value||third&&fourth z();'
+            'if a x=1;else if first_one&&second||third_value&&fourth||fifth z();'
             'if left_value&&\nright_value return;'
             'if left_value\n&&right_value return;}',
             '''
             main :: () {
-                if alpha_value > 0 && beta_value > 0
-                        && gamma_value > 0
+                if alpha_value > 0 &&
+                   beta_value > 0 && gamma_value > 0
                     return;
                 if a
                     x = 1;
-                else if first_value && second_value
-                        || third && fourth
+                else if first_one && second ||
+                        third_value && fourth ||
+                        fifth
                     z();
-                if left_value
-                        && right_value
+                if left_value &&
+                   right_value
                     return;
-                if left_value
-                        && right_value
+                if left_value &&
+                   right_value
                     return;
             }
             ''', '--width=40')
+        # Tabs indent; spaces align.
         self.assert_format('main::(){if alpha_value>0&&beta_value>0&&gamma_value>0 return;}',
-                           'main :: () {\n\tif alpha_value > 0 && beta_value > 0\n'
-                           '\t\t\t&& gamma_value > 0\n\t\treturn;\n}\n', '--tabs', '--width=40')
+                           'main :: () {\n\tif alpha_value > 0 &&\n'
+                           '\t   beta_value > 0 && gamma_value > 0\n\t\treturn;\n}\n',
+                           '--tabs', '--width=40')
+
+    def test_consecutive_lone_ifs_align_bodies(self):
+        self.assert_format(
+            'main::(){if a x=1;if bbb y=2;if cc z=3;\n\n'
+            'if a x=1;\n// note\nif bbb y=2;'
+            'if ready&&some_long_condition_name return fail(path,reason);'
+            'if a\nx=1;if bbb y=2;\n\n'
+            'if long_condition_value x=1;if c long_body_statement_here=2;'
+            'if ready x=1;else x=2;if dd y=3;}',
+            '''
+            main :: () {
+                if a   x = 1;
+                if bbb y = 2;
+                if cc  z = 3;
+
+                if a x = 1;
+                // note
+                if bbb y = 2;
+                if ready && some_long_condition_name
+                    return fail(path, reason);
+                if a
+                    x = 1;
+                if bbb y = 2;
+
+                if long_condition_value x = 1;
+                if c long_body_statement_here = 2;
+                if ready x = 1;
+                else     x = 2;
+                if dd y = 3;
+            }
+            ''', '--width=40')
+        self.assert_format('main::(){if a b();if cc d();}',
+                           'main :: () {\n\tif a  b();\n\tif cc d();\n}\n', '--tabs')
 
     def test_braceless_if_chain_line_break_requests_broken_layout(self):
         self.assert_format('main::(){if a x=1;\nelse if b\ny=2;else z=3;}', '''
@@ -1015,6 +1051,38 @@ outside :: 1;
                 self.write_config(contents)
                 self.assert_format(source, default)
 
+    def test_config_can_disable_braceless_if_layout(self):
+        source = ('main::(){if options.width>0 r.width=options.width;'
+                  'else if r.tty&&caps.columns>0 r.width=caps.columns;else r.width=80;'
+                  'if a x=1;if bbb y=2;\nif a\nx=1;\n'
+                  'if alpha_value>0&&beta_value>0&&gamma_value>0 return;\n'
+                  'if left_value\n&&right_value return;}')
+        enabled = self.run_fmt(source.encode(), '--width=40').stdout
+        self.write_config('format_braceless_if = true\n')
+        self.assert_format(source, enabled, '--width=40')
+        # The ordinary layout keeps line breaks and neither aligns nor breaks.
+        disabled = '''
+            main :: () {
+                if options.width > 0 r.width = options.width;
+                else if r.tty && caps.columns > 0 r.width = caps.columns;
+                else r.width = 80;
+                if a x = 1;
+                if bbb y = 2;
+                if a
+                    x = 1;
+                if alpha_value > 0 && beta_value > 0 && gamma_value > 0 return;
+                if left_value
+                    && right_value return;
+            }
+            '''
+        for contents in ['format_braceless_if = false\n',
+                         'width = 40\nformat_braceless_if = false\n']:
+            with self.subTest(contents=contents):
+                self.write_config(contents)
+                self.assert_format(source, disabled, '--width=40')
+        self.write_config('width = 40\nformat_braceless_if = false\n')
+        self.assert_format(source, disabled)
+
     def test_config_width_file_modes(self):
         self.write_config('width = 40\n')
         with tempfile.TemporaryDirectory() as directory:
@@ -1066,6 +1134,8 @@ outside :: 1;
                       '{}', '9223372036854775808', '9999999999999999999999999999999999999999']
         bad_configs = [f'width = {value}\n' for value in bad_values]
         bad_configs += ['width =\n', 'width = 40\nwidth = 80\n', '[broken\n']
+        bad_configs += [f'format_braceless_if = {value}\n' for value in ['0', '"false"', 'no', '[]']]
+        bad_configs += ['width = 40\nformat_braceless_if = 1\n']
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'source.glo'
             source = b'main::(){x:=1;}'

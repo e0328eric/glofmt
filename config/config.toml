@@ -1,0 +1,3 @@
+# Keep braceless if/else statements in the ordinary layout (no alignment or
+# automatic line breaks).
+format_braceless_if = true # default is true

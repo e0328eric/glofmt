@@ -80,9 +80,11 @@ main :: () -> s32 {
     if indent < 1 || indent > 16 || width < 20 || width > 1000 return 2;
     if (write && (check || stdout || path == "-")) || (check && stdout) return 2;
     if stdin_path.count > 0 && path != "-" return 2;
-    if fmt_config_width() == {
-        case ?config_width;
-            if !have_width width = config_width;
+    format_braceless_if := true;
+    if fmt_config() == {
+        case ?config;
+            if !have_width width = config.width;
+            format_braceless_if = config.format_braceless_if;
         case null;
             return 2;
     }
@@ -118,7 +120,15 @@ main :: () -> s32 {
     }
     source_path := path;
     if stdin_path.count > 0 source_path = stdin_path;
-    formatted := fmt_format(source, indent, tabs, width, source_path, std_directory);
+    formatted := fmt_format(
+        source,
+        indent,
+        tabs,
+        width,
+        source_path,
+        std_directory,
+        format_braceless_if
+    );
     defer formatted.free();
     if check {
         if formatted != source return 1;
