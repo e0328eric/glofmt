@@ -231,7 +231,9 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             operand = true;
             type_context = false;
         } else if text == "." {
-            if !operand || prev_kind == "Directive" space = false;
+            // Value directives (#self.value) end an operand; others such as
+            // #pattern take an enum literal operand: #pattern .Ok(x) := ...
+            if !operand space = false;
             operand = true;
         } else if text == "..." {
             // Variadic parameters prefix their type; expansions follow a value.

@@ -179,6 +179,23 @@ class Formatter(unittest.TestCase):
             "'+' :: (a: T, b: T) -> T #operator(left, 18) {}\n",
         )
 
+    def test_directive_enum_literal_operand(self):
+        expected = '''
+            main :: () {
+                #pattern .Ok(list) := read_directory(path) else {
+                    return 0;
+                };
+                x := #self.value + #source_location.line;
+            }
+            '''
+        for spacing in ['#pattern .Ok', '#pattern.Ok']:
+            with self.subTest(spacing=spacing):
+                self.assert_format(
+                    'main::(){' + spacing + '(list):=read_directory(path)else{return 0;};'
+                    'x:=#self.value+#source_location.line;}',
+                    expected,
+                )
+
     def test_visibility_groups(self):
         for directive in ['#public', '#private', '#public,unit', '#public,to("Friend","Other")']:
             with self.subTest(directive=directive):
