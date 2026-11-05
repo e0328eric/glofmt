@@ -19,8 +19,8 @@ fmt_config_error :: (path: str, message: str) -> ?ssize {
     directory: Path;
     if get_config_dir() == {
         case null;
-            return .Some(100);
-        case .Some(path);
+            return ?100;
+        case ?path;
             directory = path;
     }
     defer directory.free();
@@ -34,7 +34,7 @@ fmt_config_error :: (path: str, message: str) -> ?ssize {
         case .Ok(file);
             input = file;
         case .Err(failure);
-            if failure.kind == .Not_Found return .Some(100);
+            if failure.kind == .Not_Found return ?100;
             return fmt_config_error(path, failure.kind.reason());
     }
     defer input.close();
@@ -60,11 +60,11 @@ fmt_config_error :: (path: str, message: str) -> ?ssize {
     defer document.destroy();
     if document.root.field_value("width") == {
         case null;
-            return .Some(100);
-        case .Some(value);
+            return ?100;
+        case ?value;
             if deserialize(ssize, value) == {
                 case .Ok(width);
-                    if width >= 20 && width <= 1000 return .Some(width);
+                    if width >= 20 && width <= 1000 return ?width;
                 case .Err;
             }
     }

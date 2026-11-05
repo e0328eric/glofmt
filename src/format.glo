@@ -66,6 +66,33 @@ fmt_operand_keyword :: (text: str) -> bool {
             return false;
     }
 }
+// Whether `token` can begin an operand, so that a suffix-capable operator
+// before it may instead be the operand's prefix, or binary.
+fmt_starts_operand :: (ops: *Fmt_Operators, token: *Fmt_Token) -> bool {
+    if token.kind == {
+        case "Ident", "Int", "Float", "Str", "CStr", "BStr", "MlStr", "LParen", "LBracket", "Dot",
+            "DotBrace", "DotBracket", "Directive", "Backtick", "DoubleBacktick", "Dollar", "Cast",
+            "Acast", "Ifx", "Struct", "Union", "Enum", "Context";
+            return true;
+        case "Op", "OpName";
+            return token.text == "?" || fmt_operator(ops, token.text).prefix;
+        else;
+            return false;
+    }
+}
+// How the compiler reads a suffix-capable operator that an operand follows
+// when it has another reading too: attached to its left operand only it is
+// the suffix (`x? y`, `x?.y`; attached on both sides a binary reading wins),
+// attached to its right operand only it is the prefix of the next operand
+// (`ifx c ?a else null`), and detached on both sides it is binary.
+fmt_spaced_reading :: (tokens: []Fmt_Token, previous: ssize, at: ssize, next: ssize, op: Fmt_Operator) -> str {
+    before := previous >= 0 && tokens[previous].end < tokens[at].start;
+    after := tokens[at].end < tokens[next].start;
+    if !before && !after && op.binary return "binary";
+    if !before return "suffix";
+    if !after && op.prefix return "prefix";
+    return "binary";
+}
 fmt_symbolic :: (token: *Fmt_Token) -> bool {
     return token.kind == "Op" || token.kind == "Range" || token.kind == "RangeInclusive";
 }
@@ -227,6 +254,15 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
                 operand = true;
             } else if operand && op.prefix {
                 token.prefix = true;
+                operand = true;
+            } else if !operand && op.suffix && !boundary && (op.prefix || op.binary) && fmt_starts_operand(
+                ops,
+                &tokens.*[next]
+            ) && fmt_spaced_reading(tokens.view(), previous, i, next, op) != "suffix" {
+                // The compiler reads such an operator by its spacing; keep it.
+                if fmt_spaced_reading(tokens.view(), previous, i, next, op) == "prefix" {
+                    token.prefix = true;
+                } else token.binary = true;
                 operand = true;
             } else if !operand && op.suffix && (!op.binary || boundary) {
                 token.suffix = true;

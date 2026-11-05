@@ -67,17 +67,17 @@ glofmt_bundle :: (prefix: str, executable_directory: str) {
 glofmt_build :: () {
     glofmt_directory("build");
     glofmt_bundle(".", "build");
-    workspace := Workspace.create("glofmt");
-    options := workspace.get_build_options();
-    options.output_type = .Executable;
-    options.output_path = "build";
-    options.output_executable_name = "glofmt";
+    profile := Build_Profile.create("glofmt");
+    options := profile.options();
+    options.output = .Executable;
+    options.output_directory = "build";
+    options.output_name = "glofmt";
     if absolute("build/cache") == {
         case .Ok(path); options.add_compiler_arg(tprint("--cache-dir={}", path));
         case .Err(failure); report_error(failure); exit(1);
     }
-    options.set_build_options(workspace);
-    if add_build_file("main.glo", workspace) == {
+    profile.set_options(options);
+    if compile_file("main.glo", profile) == {
         case .Ok; print("built build/glofmt\n");
         case .Err(failure); report_error(failure); exit(1);
     }
@@ -124,7 +124,7 @@ glofmt_usage :: () {
 }
 
 glofmt_task :: () {
-    set_build_options_dc(.do_output = false);
+    set_current_output(false);
     args := get_cmdline_args();
     task := "build";
     if args.count > 0 task = args[0];

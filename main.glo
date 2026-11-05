@@ -81,7 +81,7 @@ main :: () -> s32 {
     if (write && (check || stdout || path == "-")) || (check && stdout) return 2;
     if stdin_path.count > 0 && path != "-" return 2;
     if fmt_config_width() == {
-        case .Some(config_width);
+        case ?config_width;
             if !have_width width = config_width;
         case null;
             return 2;
