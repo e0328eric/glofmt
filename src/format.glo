@@ -17,6 +17,8 @@ Fmt_Writer :: struct {
     pending: bool;
     blank_pending: bool;
     continuation: bool;
+    // Braceless if conditions continue a level deeper than their bodies.
+    wide_continuation: bool;
     control_header: bool;
     disabled_start: ssize = -1;
 }
@@ -38,6 +40,7 @@ fmt_write :: (writer: *Fmt_Writer, text: str, space: bool, extra_indent: ssize =
     if writer.line_start {
         depth := writer.depth + extra_indent;
         if writer.continuation depth += 1;
+        if writer.continuation && writer.wide_continuation depth += 1;
         if writer.disabled_start < 0 {
             if writer.tabs {
                 for 0..depth writer.out.write_byte(#char "\t");
@@ -56,6 +59,14 @@ fmt_write :: (writer: *Fmt_Writer, text: str, space: bool, extra_indent: ssize =
         if byte == #char "\n" writer.column = 0;
         else if byte < 128 || byte >= 192 writer.column += 1;
     }
+}
+// Alignment padding within a line, after its indentation.
+fmt_pad :: (writer: *Fmt_Writer, count: ssize) {
+    if count < 1 count = 1;
+    if writer.disabled_start < 0 {
+        for 0..count writer.out.write_byte(#char " ");
+    }
+    writer.column += count;
 }
 
 fmt_operand_keyword :: (text: str) -> bool {
@@ -459,6 +470,181 @@ fmt_chains :: (source: str, tokens: *[..]Fmt_Token) {
     }
 }
 
+// One arm of a braceless if/else chain. `keyword` is the arm's `if`, or the
+// `else` of a final arm, which has no condition. The body must be a single
+// statement ending in `;` at the chain's level, without nested control flow,
+// blocks, or comments; otherwise `end` stays -1.
+Fmt_If_Arm :: struct {
+    condition: ssize = -1;
+    body: ssize = -1;
+    end: ssize = -1;
+    condition_width: ssize;
+    body_width: ssize;
+    newline: bool;
+}
+fmt_flat_span :: (tokens: []Fmt_Token, first: ssize, stop: ssize) -> ssize {
+    width: ssize = 0;
+    at := first;
+    while at < stop {
+        if at > first && tokens[at].space width += 1;
+        width += tokens[at].flat_width;
+        if fmt_open(tokens[at].text) at = tokens[at].pair + 1;
+        else                         at += 1;
+    }
+    return width;
+}
+fmt_if_arm :: (source: str, tokens: []Fmt_Token, keyword: ssize) -> Fmt_If_Arm {
+    arm: Fmt_If_Arm;
+    if tokens[keyword].kind == "If" arm.condition = keyword + 1;
+    at := keyword + 1;
+    while at < tokens.count {
+        token := &tokens[at];
+        kind := token.kind;
+        if fmt_comment(kind) || token.hardline || token.block || token.format_disabled return arm;
+        nested := kind == "If" || kind == "Ifx" || kind == "Else" || kind == "For" || kind == "While";
+        if nested || kind == "Case" || token.text == "#if" return arm;
+        if fmt_newlines(source[tokens[at - 1].end..token.start]) > 0 arm.newline = true;
+        // The condition ends where a statement starts after a complete operand.
+        if arm.body < 0 && (arm.condition < 0 || (at > arm.condition && !token.operand_context)) {
+            statement := (kind == "Ident" && token.text != "in") || kind == "Return" || kind == "Break"
+                || kind == "Continue" || kind == "Defer" || kind == "Directive";
+            operator := token.prefix || token.binary || token.suffix;
+            if      statement && !operator arm.body = at;
+            else if arm.condition < 0      return arm;
+        }
+        if token.text == ";" {
+            if arm.body < 0 return arm;
+            if arm.condition >= 0
+                arm.condition_width = fmt_flat_span(tokens, arm.condition, arm.body);
+            arm.body_width = fmt_flat_span(tokens, arm.body, at + 1);
+            arm.end = at;
+            return arm;
+        }
+        if fmt_open(token.text) at = token.pair + 1;
+        else                    at += 1;
+    }
+    return arm;
+}
+// Columns relative to the chain's `if`: conditions follow `else if ` when the
+// chain has one, and bodies follow the widest condition.
+fmt_if_condition_column :: (head: *Fmt_Token) -> ssize {
+    if head.if_else_if return 8;
+    return 3;
+}
+fmt_if_body_column :: (head: *Fmt_Token) -> ssize {
+    return fmt_if_condition_column(head) + head.if_condition_width + 1;
+}
+// Overflowing conditions break before their loosest logical operator at the
+// top level: `||` binds looser than `&&` in the Prelude. Each such operator
+// records the width up to the next one, or to the end of the condition.
+fmt_if_condition_breaks :: (tokens: *[..]Fmt_Token, head: ssize, first: ssize, stop: ssize) {
+    operator := "&&";
+    at := first;
+    while at < stop {
+        if tokens.*[at].binary && tokens.*[at].text == "||" operator = "||";
+        if fmt_open(tokens.*[at].text) at = tokens.*[at].pair + 1;
+        else                           at += 1;
+    }
+    previous: ssize = -1;
+    at = first;
+    while at <= stop {
+        if at == stop || (tokens.*[at].binary && tokens.*[at].text == operator) {
+            if previous >= 0 {
+                tokens.*[previous].if_chain = head;
+                tokens.*[previous].if_break = true;
+                tokens.*[previous].if_segment = fmt_flat_span(tokens.view(), previous, at);
+            }
+            if at == stop return;
+            previous = at;
+        }
+        if fmt_open(tokens.*[at].text) at = tokens.*[at].pair + 1;
+        else                           at += 1;
+    }
+}
+// Walks the chain from its first `if`, measuring it or, once measured, marking
+// its tokens. A comment around `else`, or any arm that is not a single
+// statement, leaves the whole chain to the ordinary layout.
+fmt_if_chain :: (source: str, tokens: *[..]Fmt_Token, head: ssize, mark: bool) -> bool {
+    view := tokens.view();
+    first := &tokens.*[head];
+    keyword := head;
+    while keyword >= 0 {
+        arm := fmt_if_arm(source, view, keyword);
+        if arm.end < 0 return false;
+        if mark {
+            if arm.condition >= 0 {
+                tokens.*[arm.condition].if_chain = head;
+                tokens.*[arm.condition].if_condition = true;
+                fmt_if_condition_breaks(tokens, head, arm.condition, arm.body);
+            }
+            if keyword == head tokens.*[arm.condition].if_align = fmt_if_condition_column(first);
+            tokens.*[arm.body].if_chain = head;
+            tokens.*[arm.body].if_align = fmt_if_body_column(first);
+            tokens.*[arm.body].if_body = true;
+            tokens.*[arm.end].if_chain = head;
+            tokens.*[arm.end].if_body_end = true;
+        } else {
+            condition := arm.condition_width;
+            if arm.newline first.if_newline = true;
+            if condition > first.if_condition_width first.if_condition_width = condition;
+            if arm.body_width > first.if_body_width first.if_body_width = arm.body_width;
+        }
+        if arm.condition < 0 return true;
+        next := fmt_next_code(view, arm.end + 1);
+        if next >= view.count || view[next].kind != "Else" return true;
+        after := fmt_next_code(view, next + 1);
+        // `else;` is the default arm of an enclosing case block.
+        if after < view.count && view[after].text == ";" return true;
+        if next != arm.end + 1 || after != next + 1 || after >= view.count return false;
+        keyword = next;
+        if view[after].kind == "If" {
+            keyword = after;
+            if !mark {
+                first.if_else_if = true;
+                gap := source[view[next].end..view[after].start];
+                if fmt_newlines(gap) > 0 first.if_newline = true;
+            }
+        }
+    }
+    return true;
+}
+// Braceless if/else chains whose arms all fit on one line align conditions and
+// bodies into columns; otherwise every body takes its own line, indented. A
+// line break inside any arm also requests that layout. A lone `if` is a
+// one-arm chain, so its body joins the condition only while the line fits.
+fmt_if_chains :: (source: str, tokens: *[..]Fmt_Token) {
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        token.if_chain = -1;
+        token.if_align = 0;
+        token.if_condition = false;
+        token.if_break = false;
+        token.if_segment = 0;
+        token.if_body = false;
+        token.if_body_end = false;
+        token.if_else_if = false;
+        token.if_newline = false;
+        token.if_condition_width = 0;
+        token.if_body_width = 0;
+        token.if_column = 0;
+        token.if_table = false;
+    }
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        if token.kind != "If" || token.format_disabled continue;
+        if token.parent >= 0 && !tokens.*[token.parent].block continue;
+        // Chains start at statements, not at `else if` arms or nested bodies.
+        previous := fmt_previous_code(tokens.view(), i - 1);
+        if previous >= 0 {
+            before := tokens.*[previous].text;
+            if before != ";" && before != "{" && before != "}" continue;
+        }
+        if !fmt_if_chain(source, tokens, i, false) continue;
+        token.if_chain = i;
+        _ = fmt_if_chain(source, tokens, i, true);
+    }
+}
+
 fmt_after_block :: (text: str, kind: str) -> bool {
     if text == {
     case ";", ",", ",,", ")", "]", "}", "else", ".", ".*", ".&", "(", "[", "?";
@@ -478,6 +664,10 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         text := token.text;
         gap := source[previous_end..token.start];
         lines := fmt_newlines(gap);
+        if i > 0 && tokens.*[i - 1].if_break {
+            // A break after a breakable condition operator moves before it.
+            if !tokens.*[tokens.*[i - 1].if_chain].if_table lines = 0;
+        }
         comment := fmt_comment(token.kind);
         trailing_comment := comment && i > 0 && lines == 0;
         in_block := token.parent < 0;
@@ -553,13 +743,45 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             head := &tokens.*[token.chain];
             indentation := writer.depth;
             if writer.continuation indentation += 1;
+            if writer.continuation && writer.wide_continuation indentation += 1;
             joins := head.chain_indented && writer.column <= indentation * writer.indent;
             if head.chain_broken || !joins {
                 fmt_newline(&writer);
                 head.chain_broken = true;
             }
         }
-        fmt_write(&writer, text, token.space, extra);
+        // Aligned chains pad to their columns. Other chains put each body on
+        // its own line one level deep, and a condition that overflows breaks
+        // before its loosest logical operators, two levels deep.
+        aligned := false;
+        if token.if_chain >= 0 && token.if_chain != i {
+            head := &tokens.*[token.if_chain];
+            if head.if_table {
+                if token.if_align > 0 && !writer.line_start {
+                    fmt_pad(&writer, head.if_column + token.if_align - writer.column);
+                    aligned = true;
+                }
+            } else if token.if_body {
+                writer.continuation = false;
+                writer.wide_continuation = false;
+                fmt_newline(&writer);
+                writer.depth += 1;
+            } else if token.if_condition {
+                writer.wide_continuation = true;
+            } else if token.if_break && !writer.line_start {
+                after := fmt_newlines(source[token.end..tokens.*[i + 1].start]) > 0;
+                if after || writer.column + 1 + token.if_segment > width {
+                    writer.continuation = true;
+                    fmt_newline(&writer);
+                }
+            }
+        }
+        fmt_write(&writer, text, token.space && !aligned, extra);
+        if token.if_chain == i {
+            token.if_column = writer.column - fmt_width(text);
+            token.if_table = !token.if_newline
+                && token.if_column + fmt_if_body_column(token) + token.if_body_width <= width;
+        }
         if fmt_open(text) {
             nonempty := token.pair > i + 1;
             token.multiline = nonempty && (
@@ -584,8 +806,10 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             if in_block {
                 writer.pending = true;
                 writer.continuation = false;
+                writer.wide_continuation = false;
                 writer.control_header = false;
             } else if token.parent >= 0 && tokens.*[token.parent].text == ".[" && tokens.*[token.parent].multiline writer.pending = true;
+            if token.if_body_end && !tokens.*[token.if_chain].if_table writer.depth -= 1;
         } else if text == "," || text == ",," {
             if token.parent >= 0 && tokens.*[token.parent].multiline && !tokens.*[token.parent].block
                 && !token.lambda_parameter && !token.directive_modifier writer.pending = true;
@@ -659,6 +883,7 @@ fmt_checked_layout :: (
 ) -> str {
     fmt_measure(tokens);
     fmt_chains(source, tokens);
+    fmt_if_chains(source, tokens);
     formatted := fmt_layout(source, tokens, indent, tabs, width);
     if fmt_verified(formatted, tokens.view()) return formatted;
     formatted.free();

@@ -782,6 +782,108 @@ outside :: 1;
             }
             ''', '--width=30')
 
+    def test_braceless_if_chains_align_when_every_arm_fits(self):
+        self.assert_format(
+            'main::(){if options.width>0 r.width=options.width;'
+            'else if r.tty&&caps.columns>0 r.width=caps.columns;'
+            'else if #pattern ?n=env_columns() r.width=n;else r.width=80;'
+            'if ready x=1;else x=2;if x in set return;}',
+            '''
+            main :: () {
+                if      options.width > 0           r.width = options.width;
+                else if r.tty && caps.columns > 0   r.width = caps.columns;
+                else if #pattern ?n = env_columns() r.width = n;
+                else                                r.width = 80;
+                if ready x = 1;
+                else     x = 2;
+                if x in set return;
+            }
+            ''')
+        # Tabs indent; spaces align.
+        self.assert_format('main::(){if a b();else if cc d();}',
+                           'main :: () {\n\tif      a  b();\n\telse if cc d();\n}\n', '--tabs')
+
+    def test_braceless_if_chains_break_every_body_when_too_wide(self):
+        self.assert_format(
+            'main::(){if options.width>0 r.width=options.width;'
+            'else if #pattern ?n=env_columns_or(fallback) r.width=n;else r.width=80;'
+            'if ready&&some_long_condition_name return report_failure(path,reason);'
+            'if ready return;}',
+            '''
+            main :: () {
+                if options.width > 0
+                    r.width = options.width;
+                else if #pattern ?n = env_columns_or(fallback)
+                    r.width = n;
+                else
+                    r.width = 80;
+                if ready && some_long_condition_name
+                    return report_failure(path, reason);
+                if ready return;
+            }
+            ''', '--width=60')
+
+    def test_braceless_if_conditions_break_before_loosest_logical_operator(self):
+        self.assert_format(
+            'main::(){if alpha_value>0&&beta_value>0&&gamma_value>0 return;'
+            'if a x=1;else if first_value&&second_value||third&&fourth z();'
+            'if left_value&&\nright_value return;'
+            'if left_value\n&&right_value return;}',
+            '''
+            main :: () {
+                if alpha_value > 0 && beta_value > 0
+                        && gamma_value > 0
+                    return;
+                if a
+                    x = 1;
+                else if first_value && second_value
+                        || third && fourth
+                    z();
+                if left_value
+                        && right_value
+                    return;
+                if left_value
+                        && right_value
+                    return;
+            }
+            ''', '--width=40')
+        self.assert_format('main::(){if alpha_value>0&&beta_value>0&&gamma_value>0 return;}',
+                           'main :: () {\n\tif alpha_value > 0 && beta_value > 0\n'
+                           '\t\t\t&& gamma_value > 0\n\t\treturn;\n}\n', '--tabs', '--width=40')
+
+    def test_braceless_if_chain_line_break_requests_broken_layout(self):
+        self.assert_format('main::(){if a x=1;\nelse if b\ny=2;else z=3;}', '''
+            main :: () {
+                if a
+                    x = 1;
+                else if b
+                    y = 2;
+                else
+                    z = 3;
+            }
+            ''')
+
+    def test_braceless_if_chains_need_single_statement_arms(self):
+        self.assert_format(
+            'main::(){if a x=1;else{y();}\nif a x=1; // note\nelse y=2;\n'
+            'if x=={case 1;if a b=1;else;c=2;}}',
+            '''
+            main :: () {
+                if a x = 1;
+                else {
+                    y();
+                }
+                if a x = 1; // note
+                else y = 2;
+                if x == {
+                case 1;
+                    if a b = 1;
+                else;
+                    c = 2;
+                }
+            }
+            ''')
+
     def test_long_method_chains_break_before_each_call(self):
         self.assert_format(
             'env::(name:str,fallback:str="")->str{'

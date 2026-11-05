@@ -136,6 +136,45 @@ else;
 }
 ```
 
+Nothing separates a braceless `if`'s condition from its body, so the layout
+marks that boundary with a column or a line break. When every arm of an
+`if`/`else if`/`else` chain is a single statement and the aligned lines fit
+the width, conditions and bodies line up:
+
+```glosso
+if      options.width > 0         r.width = options.width;
+else if r.tty && caps.columns > 0 r.width = caps.columns;
+else                              r.width = 80;
+```
+
+Otherwise every body in the chain moves to its own line, indented one level.
+A line break inside any arm also requests this layout. A lone `if` keeps its
+body on the same line while it fits:
+
+```glosso
+if options.width > 0
+    r.width = options.width;
+else if #pattern ?n = env_columns_or_terminal_fallback(default_columns)
+    r.width = n;
+else
+    r.width = 80;
+```
+
+A condition that still overflows breaks before its top-level `||` operators,
+or before `&&` when it has no top-level `||`, filling each line as far as the
+width allows. Its continuation lines indent two levels, so the body, one
+level deep, stands apart; with a 4-column indent, `else if` conditions line
+up. A line break after one of these operators moves before it:
+
+```glosso
+else if lines > 1 && !fmt_close(text) && text != "else" && text != "{" && in_block
+        && (prev.text == ";" || prev.text == "}" || fmt_comment(prev.kind))
+    fmt_blank_line(&writer);
+```
+
+Chains with a braced arm, a comment between arms, or a nested control-flow
+body keep the ordinary layout.
+
 Use `// glofmt: off` and `// glofmt: on` to preserve manual formatting:
 
 ```glosso

@@ -46,6 +46,25 @@ Fmt_Token :: struct {
     chain_vertical: bool;
     chain_indented: bool;
     chain_broken: bool;
+    // Braceless if/else chains: the first `if` holds the chain's facts and
+    // layout state; each arm's first condition and body tokens, the logical
+    // operators its condition may break before, and each body's `;` refer
+    // back to it. `if_align` is a column offset from the chain's `if`,
+    // applied when the arms form aligned columns. `if_segment` is the flat
+    // width from a breakable operator to the next one or the condition's end.
+    if_chain: ssize = -1;
+    if_align: ssize;
+    if_condition: bool;
+    if_break: bool;
+    if_segment: ssize;
+    if_body: bool;
+    if_body_end: bool;
+    if_else_if: bool;
+    if_newline: bool;
+    if_condition_width: ssize;
+    if_body_width: ssize;
+    if_column: ssize;
+    if_table: bool;
 }
 
 fmt_trivia :: (kind: str) -> bool {
