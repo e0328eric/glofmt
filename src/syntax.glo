@@ -35,6 +35,16 @@
         multiline: bool;
         hardline: bool;
         flat_width: ssize;
+        // Method chains: the root's first token holds the chain's facts and
+        // layout state; the root's last token, the dots before each broken
+        // element, and the chain's last token refer back to it.
+        chain: ssize = -1;
+        chain_root_end: ssize = -1;
+        chain_end: ssize = -1;
+        chain_width: ssize;
+        chain_vertical: bool;
+        chain_indented: bool;
+        chain_broken: bool;
     }
 
     fmt_trivia :: (kind: str) -> bool {

@@ -343,6 +343,114 @@ fmt_measure :: (tokens: *[..]Fmt_Token) {
     }
 }
 
+fmt_member_dot :: (token: *Fmt_Token) -> bool {
+    return token.text == "." && !token.operand_context;
+}
+// Calls, indexing, and initializers attached to a preceding operand.
+fmt_postfix_group :: (token: *Fmt_Token) -> bool {
+    return (token.text == "(" || token.text == "[" || token.text == ".{" || token.text == ".[")
+        && !token.operand_context;
+}
+// The first token of the operand before `dot`, or -1 when `dot` continues an
+// earlier member access, so that each postfix sequence is visited once.
+fmt_chain_root :: (tokens: []Fmt_Token, dot: ssize) -> ssize {
+    at := fmt_previous_code(tokens, dot - 1);
+    while at >= 0 {
+        token := &tokens[at];
+        if fmt_close(token.text) {
+            open := token.pair;
+            if tokens[open].text == "{" return -1;
+            if !fmt_postfix_group(&tokens[open]) return open;
+            at = fmt_previous_code(tokens, open - 1);
+        } else if token.suffix {
+            at = fmt_previous_code(tokens, at - 1);
+        } else {
+            before := fmt_previous_code(tokens, at - 1);
+            if before >= 0 && fmt_member_dot(&tokens[before]) return -1;
+            return at;
+        }
+    }
+    return -1;
+}
+// A chain has at least two method calls after its root. Leading field
+// accesses join the root; every element from the first call on can break
+// onto its own line (Rust style guide). A line break before one of those
+// elements in a block requests vertical layout, like a trailing comma.
+fmt_chains :: (source: str, tokens: *[..]Fmt_Token) {
+    for i: 0..tokens.*.count {
+        token := &tokens.*[i];
+        token.chain = -1;
+        token.chain_root_end = -1;
+        token.chain_end = -1;
+        token.chain_width = 0;
+        token.chain_vertical = false;
+        token.chain_indented = false;
+        token.chain_broken = false;
+    }
+    for i: 0..tokens.*.count {
+        if !fmt_member_dot(&tokens.*[i]) continue;
+        root := fmt_chain_root(tokens.view(), i);
+        if root < 0 continue;
+        root_end := fmt_previous_code(tokens.view(), i - 1);
+        end := root_end;
+        first_call: ssize = -1;
+        calls := 0;
+        at := i;
+        while at < tokens.*.count && fmt_member_dot(&tokens.*[at]) {
+            name := fmt_next_code(tokens.view(), at + 1);
+            if name >= tokens.*.count break;
+            if fmt_open(tokens.*[name].text) || fmt_close(tokens.*[name].text) break;
+            element_end := name;
+            next := fmt_next_code(tokens.view(), name + 1);
+            call := next < tokens.*.count && tokens.*[next].text == "("
+                && fmt_postfix_group(&tokens.*[next]);
+            while next < tokens.*.count {
+                if fmt_postfix_group(&tokens.*[next]) element_end = tokens.*[next].pair;
+                else if tokens.*[next].suffix element_end = next;
+                else break;
+                next = fmt_next_code(tokens.view(), element_end + 1);
+            }
+            if call {
+                calls += 1;
+                if first_call < 0 first_call = at;
+            } else if first_call < 0 root_end = element_end;
+            end = element_end;
+            at = next;
+        }
+        if calls < 2 continue;
+        head := &tokens.*[root];
+        head.chain_root_end = root_end;
+        head.chain_end = end;
+        tokens.*[root_end].chain = root;
+        tokens.*[end].chain = root;
+        // Statement terminators and separators stay on the chain's last line.
+        width: ssize = 0;
+        at = root;
+        while at <= end {
+            child := &tokens.*[at];
+            if at > root && child.space width += 1;
+            width += child.flat_width;
+            if fmt_open(child.text) at = child.pair + 1;
+            else at += 1;
+        }
+        after := fmt_next_code(tokens.view(), end + 1);
+        if after < tokens.*.count && (tokens.*[after].text == ";" || tokens.*[after].text == ",")
+            width += 1;
+        head.chain_width = width;
+        in_block := head.parent < 0 || tokens.*[head.parent].block;
+        at = first_call;
+        while at <= end {
+            if fmt_member_dot(&tokens.*[at]) {
+                tokens.*[at].chain = root;
+                if in_block && fmt_newlines(source[tokens.*[at - 1].end..tokens.*[at].start]) > 0
+                    head.chain_vertical = true;
+            }
+            if fmt_open(tokens.*[at].text) at = tokens.*[at].pair + 1;
+            else at += 1;
+        }
+    }
+}
+
 fmt_after_block :: (text: str, kind: str) -> bool {
     if text == {
         case ";", ",", ",,", ")", "]", "}", "else", ".", ".*", ".&", "(", "[", "?";
@@ -366,6 +474,8 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         trailing_comment := comment && i > 0 && lines == 0;
         in_block := token.parent < 0;
         if token.parent >= 0 in_block = tokens.*[token.parent].block;
+        member := fmt_member_dot(token);
+        chain_dot := member && token.chain >= 0;
         if fmt_close(text) {
             open := &tokens.*[token.pair];
             if open.block {
@@ -400,7 +510,7 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             prev := &tokens.*[i - 1];
             if in_block && !comment && !fmt_close(text) && text != "{" && text != "else" {
                 if token.binary || prev.binary || prev.text == ":=" || prev.text == "=" || prev.text == "::"
-                    writer.continuation = true;
+                    || (member && !chain_dot) writer.continuation = true;
                 if writer.control_header && !token.operand_context
                     && (
                         token.kind == "Ident" || token.kind == "Return" || token.kind == "Break" || token.kind == "Continue"
@@ -409,7 +519,7 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             }
             if (in_block || comment || prev.kind == "LineComment" || token.kind == "MlStr")
                 && !fmt_close(text) && text != "{" && text != "else" && text != ";" && text != ","
-                && !fmt_open(prev.text) fmt_newline(&writer);
+                && !fmt_open(prev.text) && !chain_dot fmt_newline(&writer);
             if lines > 1 && !fmt_close(text) && text != "else" && text != "{" && in_block
                 && (prev.text == ";" || prev.text == "}" || fmt_comment(prev.kind)) fmt_blank_line(
                     &writer
@@ -429,6 +539,18 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
         } else if token.kind != "MlStr" && !comment asm_template = false;
         extra: ssize = 0;
         if token.kind == "MlStr" && !asm_template extra = 1;
+        // Vertical chains put each element on its own line. Leading elements
+        // join the root while its line ends left of the elements' indentation.
+        if chain_dot && tokens.*[token.chain].chain_vertical {
+            head := &tokens.*[token.chain];
+            indentation := writer.depth;
+            if writer.continuation indentation += 1;
+            joins := head.chain_indented && writer.column <= indentation * writer.indent;
+            if head.chain_broken || !joins {
+                fmt_newline(&writer);
+                head.chain_broken = true;
+            }
+        }
         fmt_write(&writer, text, token.space, extra);
         if fmt_open(text) {
             nonempty := token.pair > i + 1;
@@ -467,6 +589,27 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
                     tokens.*[next].kind
                 )
             ) writer.pending = true;
+        }
+        // Chains inside a group break only once the group itself has.
+        if token.chain_width > 0 && !token.chain_vertical {
+            parent_open := token.parent < 0 || tokens.*[token.parent].block
+                || tokens.*[token.parent].multiline;
+            start := writer.column - fmt_width(text);
+            token.chain_vertical = parent_open && start + token.chain_width > width;
+        }
+        if token.chain >= 0 {
+            head := &tokens.*[token.chain];
+            // A multiline root ending in its closing delimiter is block-like
+            // (rustfmt); its elements stay at the root's indentation.
+            if head.chain_root_end == i && head.chain_vertical
+                && (!fmt_close(text) || !tokens.*[token.pair].multiline) {
+                writer.depth += 1;
+                head.chain_indented = true;
+            }
+            if head.chain_end == i && head.chain_indented {
+                writer.depth -= 1;
+                head.chain_indented = false;
+            }
         }
         // Keep computing layout while output is disabled, including delimiter
         // and match-arm depth. Resume with the original bytes through the on
@@ -507,6 +650,7 @@ fmt_checked_layout :: (
     width: ssize
 ) -> str {
     fmt_measure(tokens);
+    fmt_chains(source, tokens);
     formatted := fmt_layout(source, tokens, indent, tabs, width);
     if fmt_verified(formatted, tokens.view()) return formatted;
     formatted.free();

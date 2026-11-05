@@ -102,6 +102,23 @@ use `Point.{ .x = 1, .y = 2 }`. Trailing comments stay with their statement;
 up to one blank line between statements or comments is retained. Generated
 line breaks use LF.
 
+A chain with at least two method calls that does not fit on one line puts each
+call (and any member access after the first call) on its own line, indented one
+level. Leading field accesses stay with the root. A line break before any of
+those elements inside a block also requests this layout:
+
+```glosso
+return environment_get_or(name, fallback, context.temp_allocator)
+    .unwrap_or(fallback)
+    .into_temporary();
+```
+
+As in the Rust style guide, the first call joins a root that ends left of
+that indentation (`sb.write(a)` then `.write(b)` below it). As in rustfmt,
+when the root ends with the closing delimiter of an expanded argument list,
+the elements line up with that delimiter instead of indenting. A member access
+alone on a continuation line is indented like other continuations.
+
 Visibility groups (`#public { ... }` and `#private { ... }`, including public
 audience modifiers) keep their contents at the surrounding indentation level,
 with one blank line just inside each brace. Nested declarations still indent

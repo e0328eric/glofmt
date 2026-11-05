@@ -782,6 +782,63 @@ outside :: 1;
             }
             ''', '--width=30')
 
+    def test_long_method_chains_break_before_each_call(self):
+        self.assert_format(
+            'env::(name:str,fallback:str="")->str{'
+            'return environment_get_or(name,fallback,context.temp_allocator).unwrap_or(fallback).into_temporary();'
+            'sb.write_string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").write_string("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");'
+            'x:=value.field.other.first(argument_one,argument_two).second(argument_three)?.done(argument_four);'
+            'short:=a.b().c();z:=environment_get_or(name,fallback,context.temp_allocator).unwrap_or(fallback);'
+            'call(first_argument,builder.add(one_thing_here).add(another_thing_here).add(the_third_thing_too)'
+            '.add(fourth).build());}',
+            '''
+            env :: (name: str, fallback: str = "") -> str {
+                return environment_get_or(name, fallback, context.temp_allocator)
+                    .unwrap_or(fallback)
+                    .into_temporary();
+                sb.write_string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                    .write_string("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+                x := value.field.other
+                    .first(argument_one, argument_two)
+                    .second(argument_three)?
+                    .done(argument_four);
+                short := a.b().c();
+                z := environment_get_or(name, fallback, context.temp_allocator).unwrap_or(fallback);
+                call(
+                    first_argument,
+                    builder
+                        .add(one_thing_here)
+                        .add(another_thing_here)
+                        .add(the_third_thing_too)
+                        .add(fourth)
+                        .build()
+                );
+            }
+            ''')
+
+    def test_method_chain_line_breaks_and_block_like_roots(self):
+        # A break before one element in a block lays out the whole chain
+        # vertically; a member access alone on its line is a continuation.
+        self.assert_format(
+            'main::(){\nw:=a.b()\n.c();\ny:=foo\n.bar();\n'
+            'v:=environment_get_or(name,fallback,context.temp_allocator).unwrap_or(fallback).into_temporary();\n}',
+            '''
+            main :: () {
+                w := a
+                    .b()
+                    .c();
+                y := foo
+                    .bar();
+                v := environment_get_or(
+                    name,
+                    fallback,
+                    context.temp_allocator
+                )
+                .unwrap_or(fallback)
+                .into_temporary();
+            }
+            ''', '--width=60')
+
     def test_file_default_write_and_explicit_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'source.glo'
