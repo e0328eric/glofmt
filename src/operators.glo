@@ -4,10 +4,10 @@
 #import "String_Builder";
 #import "Strings";
 #import "File_System/File";
+#import "File_System/Metadata";
 #import "File_System/Path";
 #import "File_System/System";
 #import "Memory/Ownership";
-#import "Os";
 
 #public {
     Fmt_Operator :: struct {
@@ -162,10 +162,10 @@ fmt_add_operator :: (ops: *Fmt_Operators, name: str, mode: str) {
 fmt_module_candidate :: (base: str, name: str) -> str {
     path := path_join(base, name);
     defer path.free();
-    if os_fs_is_regular_file(path) return path.clone();
-    if os_fs_is_directory(path) {
+    if is_regular_file(path).unwrap_or(false) return path.clone();
+    if is_directory(path).unwrap_or(false) {
         module := path_join(path, "module.glo");
-        if os_fs_is_regular_file(module) return module;
+        if is_regular_file(module).unwrap_or(false) return module;
         module.free();
     }
     if path_extension(path).count == 0 {
@@ -173,7 +173,7 @@ fmt_module_candidate :: (base: str, name: str) -> str {
         defer extended.free();
         extended.write_string(path);
         extended.write_string(".glo");
-        if os_fs_is_regular_file(extended.to_string()) return value_take(&extended).into_string();
+        if is_regular_file(extended.to_string()).unwrap_or(false) return value_take(&extended).into_string();
     }
     return "".clone();
 }

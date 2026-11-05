@@ -24,7 +24,8 @@ LIBRARY_DIRECTORY = "bin" if sys.platform == "win32" else "share"
 class Installation(unittest.TestCase):
     def build_task(self, *arguments):
         return subprocess.run(
-            [COMPILER, "first.glo", "--cache-dir=build/cache", "--color=never",
+            [COMPILER, "compile", "first.glo", "--cache-dir=build/cache",
+             "--color=never",
              "--", *map(str, arguments)],
             cwd=ROOT, capture_output=True, text=True, timeout=180,
         )

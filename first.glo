@@ -1,8 +1,12 @@
 //! Build and install glofmt with the current compiler's matching libglosso.
 #import "Compiler";
+#import "File_System/Copy";
+#import "File_System/Directory";
 #import "File_System/File";
+#import "File_System/Metadata";
 #import "File_System/Path";
 #import "File_System/System";
+#import "File_System/Types";
 #import "Glosso/Paths";
 #import "Format";
 #import "Io";
@@ -11,28 +15,30 @@
 #import "Typeclass/Error";
 
 glofmt_directory :: (path: str) {
-    if os_fs_is_directory(path) || os_fs_create_directories(path) return;
-    print("could not create {}\n", path);
-    exit(1);
+    if create_directory(path, .make_parent = true) == {
+        case .Ok; return;
+        case .Err(failure); report_error(failure); exit(1);
+    }
 }
 
 // Stage before replacing, preserving the previous file if copying fails.
 // Replacing the directory entry also permits updating a running executable.
 glofmt_copy :: (source: str, destination: str) {
     temporary := tprint("{}.glofmt-tmp", destination);
-    if os_fs_exists(temporary) || os_fs_is_symlink(temporary) {
-        if !os_fs_remove_path(temporary) {
+    // `exists` does not follow a final symlink, so a dangling link counts.
+    if exists(temporary).unwrap_or(true) {
+        if remove(temporary).is_err() {
             print("could not replace {}\n", temporary);
             exit(1);
         }
     }
-    if !os_fs_copy_file(source, temporary, false) {
-        _ = os_fs_remove_path(temporary);
+    if copy_file(source, temporary).is_err() {
+        _ = remove(temporary);
         print("could not copy {} to {}\n", source, destination);
         exit(1);
     }
-    if !os_fs_rename_path(temporary, destination) {
-        _ = os_fs_remove_path(temporary);
+    if rename(temporary, destination).is_err() {
+        _ = remove(temporary);
         print("could not replace {}\n", destination);
         exit(1);
     }
@@ -52,7 +58,7 @@ glofmt_bundle :: (prefix: str, executable_directory: str) {
     sdk_prefix := path_dirname(GLOSSO_STANDARD_DIRECTORY);
     library := glosso_library_path(sdk_prefix);
     defer library.free();
-    if !os_fs_is_regular_file(library) {
+    if !is_regular_file(library).unwrap_or(false) {
         print("libglosso is missing: {}. Install Glosso or build its SDK with build.exe libglosso.\n", library);
         exit(1);
     }
@@ -115,7 +121,7 @@ glofmt_install :: (prefix: str) {
 glofmt_usage :: () {
     print(
         #string
-            \\usage: glosso first.glo -- [build|install|help]
+            \\usage: glosso compile first.glo -- [build|install|help]
             \\
             \\  build                 build build/glofmt (the default)
             \\  install [--prefix DIR] build and install (default: $HOME/.local/glofmt)

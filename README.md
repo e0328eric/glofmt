@@ -15,7 +15,7 @@ syntax, including quoted operators, `.{}`, `.[]`, `E!T`, and `?T`, takes priorit
 Build with an installed Glosso compiler and its matching libglosso:
 
 ```sh
-glosso first.glo --cache-dir=build/cache
+glosso compile first.glo --cache-dir=build/cache
 build/glofmt source.glo              # format the file in place
 build/glofmt --stdout source.glo     # preview without changing the file
 build/glofmt --check source.glo
@@ -27,11 +27,11 @@ build/glofmt --stdin-filepath=src/example.glo < unsaved-buffer.glo
 Install under `$HOME/.local/glofmt`:
 
 ```sh
-glosso first.glo -- install
+glosso compile first.glo -- install
 ~/.local/glofmt/bin/glofmt source.glo
 ```
 
-Use `glosso first.glo -- install --prefix /other/directory` to choose another
+Use `glosso compile first.glo -- install --prefix /other/directory` to choose another
 prefix. Add `$HOME/.local/glofmt/bin` to `PATH` to invoke `glofmt` directly.
 The build script also accepts `build` (the default) and `help` after `--`.
 Run it from the repository root.
@@ -57,7 +57,7 @@ For development with neighboring `glofmt/` and `glosso/` checkouts:
 
 ```sh
 (cd ../glosso && ./build.exe libglosso)
-../glosso/build/bin/glosso first.glo --cache-dir=build/cache
+../glosso/build/bin/glosso compile first.glo --cache-dir=build/cache
 python3 tests/integration.py
 python3 tests/installation.py --compiler ../glosso/build/bin/glosso
 python3 tests/corpus.py --std "$HOME/.local/glosso/std"
