@@ -545,11 +545,38 @@ outside :: 1;
                 f := |x, y| x + y;
                 g := || 42;
                 if x == {
-                    case 0, 1;
-                        return -1;
-                    else;
-                        return 0;
+                case 0, 1;
+                    return -1;
+                else;
+                    return 0;
                 }
+            }
+            ''')
+
+    def test_case_arms_align_with_owner(self):
+        self.assert_format(
+            'main::(){if arg=={case "-d","--delay";delay=1.0;case "-w";windowed=true;else;}'
+            '#if OS=={case .Linux;x:=1;else;x:=2;}}#if OS=={case .Linux;#import "Linux";else;}',
+            '''
+            main :: () {
+                if arg == {
+                case "-d", "--delay";
+                    delay = 1.0;
+                case "-w";
+                    windowed = true;
+                else;
+                }
+                #if OS == {
+                case .Linux;
+                    x := 1;
+                else;
+                    x := 2;
+                }
+            }
+            #if OS == {
+            case .Linux;
+                #import "Linux";
+            else;
             }
             ''')
 
@@ -661,11 +688,11 @@ outside :: 1;
              b'        // glofmt: on\n2,3,];}',
              b'main :: () {\n    // glofmt: off\nxs:=.[1,\n'
              b'        // glofmt: on\n        2,\n        3,\n    ];\n}\n'),
-            (b'main::(){if x=={\n        // glofmt: off\ncase 0;\nx:=1;\n'
-             b'            // glofmt: on\ny:=2;else;z:=3;}}',
-             b'main :: () {\n    if x == {\n        // glofmt: off\ncase 0;\nx:=1;\n'
-             b'            // glofmt: on\n            y := 2;\n'
-             b'        else;\n            z := 3;\n    }\n}\n'),
+            (b'main::(){if x=={\n    // glofmt: off\ncase 0;\nx:=1;\n'
+             b'        // glofmt: on\ny:=2;else;z:=3;}}',
+             b'main :: () {\n    if x == {\n    // glofmt: off\ncase 0;\nx:=1;\n'
+             b'        // glofmt: on\n        y := 2;\n'
+             b'    else;\n        z := 3;\n    }\n}\n'),
         ]
         for source, expected in cases:
             with self.subTest(source=source):

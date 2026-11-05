@@ -376,7 +376,7 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             if open.multiline {
                 if open.visibility_group fmt_blank_line(&writer);
                 else {
-                    writer.depth -= 1;
+                    if !open.case_block writer.depth -= 1;
                     fmt_newline(&writer);
                 }
             }
@@ -440,7 +440,9 @@ fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, w
             if token.multiline {
                 // Delay the blank line until after any opening-line comments.
                 if token.visibility_group writer.blank_pending = true;
-                else writer.depth += 1;
+                // Case arms align with the `if`/`#if` that owns them; only
+                // their bodies indent.
+                else if !token.case_block writer.depth += 1;
                 writer.pending = true;
             }
         } else if text == ";" {

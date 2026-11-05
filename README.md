@@ -108,6 +108,17 @@ with one blank line just inside each brace. Nested declarations still indent
 normally, and empty groups stay `{}`. Inherent method blocks such as
 `T ::: #public { ... }` indent their methods normally.
 
+In `if x == { ... }` and `#if x == { ... }`, the `case` and `else;` arms align
+with the `if` and its closing brace, and only the arm bodies are indented:
+
+```glosso
+if arg == {
+case "-w", "--windowed";
+    windowed = true;
+else;
+}
+```
+
 Use `// glofmt: off` and `// glofmt: on` to preserve manual formatting:
 
 ```glosso
