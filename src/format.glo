@@ -60,24 +60,24 @@ fmt_write :: (writer: *Fmt_Writer, text: str, space: bool, extra_indent: ssize =
 
 fmt_operand_keyword :: (text: str) -> bool {
     if text == {
-        case "return", "if", "ifx", "else", "while", "for", "case", "defer", "using", "where", "in";
-            return true;
-        else;
-            return false;
+    case "return", "if", "ifx", "else", "while", "for", "case", "defer", "using", "where", "in";
+        return true;
+    else;
+        return false;
     }
 }
 // Whether `token` can begin an operand, so that a suffix-capable operator
 // before it may instead be the operand's prefix, or binary.
 fmt_starts_operand :: (ops: *Fmt_Operators, token: *Fmt_Token) -> bool {
     if token.kind == {
-        case "Ident", "Int", "Float", "Str", "CStr", "BStr", "MlStr", "LParen", "LBracket", "Dot",
-            "DotBrace", "DotBracket", "Directive", "Backtick", "DoubleBacktick", "Dollar", "Cast",
-            "Acast", "Ifx", "Struct", "Union", "Enum", "Context";
-            return true;
-        case "Op", "OpName";
-            return token.text == "?" || fmt_operator(ops, token.text).prefix;
-        else;
-            return false;
+    case "Ident", "Int", "Float", "Str", "CStr", "BStr", "MlStr", "LParen", "LBracket", "Dot",
+    "DotBrace", "DotBracket", "Directive", "Backtick", "DoubleBacktick", "Dollar", "Cast",
+    "Acast", "Ifx", "Struct", "Union", "Enum", "Context";
+        return true;
+    case "Op", "OpName";
+        return token.text == "?" || fmt_operator(ops, token.text).prefix;
+    else;
+        return false;
     }
 }
 // How the compiler reads a suffix-capable operator that an operand follows
@@ -85,7 +85,13 @@ fmt_starts_operand :: (ops: *Fmt_Operators, token: *Fmt_Token) -> bool {
 // the suffix (`x? y`, `x?.y`; attached on both sides a binary reading wins),
 // attached to its right operand only it is the prefix of the next operand
 // (`ifx c ?a else null`), and detached on both sides it is binary.
-fmt_spaced_reading :: (tokens: []Fmt_Token, previous: ssize, at: ssize, next: ssize, op: Fmt_Operator) -> str {
+fmt_spaced_reading :: (
+    tokens: []Fmt_Token,
+    previous: ssize,
+    at: ssize,
+    next: ssize,
+    op: Fmt_Operator
+) -> str {
     before := previous >= 0 && tokens[previous].end < tokens[at].start;
     after := tokens[at].end < tokens[next].start;
     if !before && !after && op.binary return "binary";
@@ -98,10 +104,10 @@ fmt_symbolic :: (token: *Fmt_Token) -> bool {
 }
 fmt_directive_modifiers :: (text: str) -> bool {
     if text == {
-        case "#inline", "#expand", "#public", "#library", "#string", "#derive", "#insert";
-            return true;
-        else;
-            return false;
+    case "#inline", "#expand", "#public", "#library", "#string", "#derive", "#insert";
+        return true;
+    else;
+        return false;
     }
 }
 
@@ -166,7 +172,9 @@ fmt_spacing :: (tokens: *[..]Fmt_Token, ops: *Fmt_Operators) {
             // Modifier commas are neither expression nor list separators.
             // Follow chains such as #string,oneline,escape across comments.
             if text == "," {
-                token.directive_modifier = (prev_kind == "Directive" && fmt_directive_modifiers(prev_text))
+                token.directive_modifier = (
+                    prev_kind == "Directive" && fmt_directive_modifiers(prev_text)
+                )
                     || (prev_kind == "Ident" && prev.directive_modifier);
             } else if token.kind == "Ident" && prev_text == "," && prev.directive_modifier {
                 token.directive_modifier = true;
@@ -453,10 +461,10 @@ fmt_chains :: (source: str, tokens: *[..]Fmt_Token) {
 
 fmt_after_block :: (text: str, kind: str) -> bool {
     if text == {
-        case ";", ",", ",,", ")", "]", "}", "else", ".", ".*", ".&", "(", "[", "?";
-            return false;
-        else;
-            return kind != "Op" && kind != "Range" && kind != "RangeInclusive";
+    case ";", ",", ",,", ")", "]", "}", "else", ".", ".*", ".&", "(", "[", "?";
+        return false;
+    else;
+        return kind != "Op" && kind != "Range" && kind != "RangeInclusive";
     }
 }
 fmt_layout :: (source: str, tokens: *[..]Fmt_Token, indent: ssize, tabs: bool, width: ssize) -> str {

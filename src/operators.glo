@@ -10,17 +10,19 @@
 #import "Memory/Ownership";
 
 #public {
-    Fmt_Operator :: struct {
-        name: str;
-        prefix: bool;
-        suffix: bool;
-        binary: bool;
-    }
-    Fmt_Operators :: struct {
-        entries: [..]Fmt_Operator;
-        visited: [..]str;
-        complete: bool = true;
-    }
+
+Fmt_Operator :: struct {
+    name: str;
+    prefix: bool;
+    suffix: bool;
+    binary: bool;
+}
+Fmt_Operators :: struct {
+    entries: [..]Fmt_Operator;
+    visited: [..]str;
+    complete: bool = true;
+}
+
 }
 Fmt_Operators ::: #public {
     free :: (*#self) {
@@ -198,30 +200,30 @@ fmt_read_operators :: (ops: *Fmt_Operators, path: str, std_directory: str, depth
     for visited: ops.visited.view() if visited == normalized return;
     ops.visited.push(normalized.clone());
     if File.open(path) == {
+    case .Err;
+        ops.complete = false;
+    case .Ok(file);
+        defer file.close();
+        if file.read_all() == {
         case .Err;
             ops.complete = false;
-        case .Ok(file);
-            defer file.close();
-            if file.read_all() == {
-                case .Err;
-                    ops.complete = false;
-                case .Ok(source);
-                    defer source.free();
-                    scanned := glosso_tokens(source);
-                    defer scanned.free();
-                    if !scanned.success {
-                        ops.complete = false;
-                        return;
-                    }
-                    tokens := fmt_tokens(source, &scanned);
-                    defer tokens.free();
-                    if !fmt_pairs(&tokens) {
-                        ops.complete = false;
-                        return;
-                    }
-                    fmt_declarations(ops, tokens.view());
-                    fmt_import_operators(ops, tokens.view(), path, std_directory, depth + 1);
+        case .Ok(source);
+            defer source.free();
+            scanned := glosso_tokens(source);
+            defer scanned.free();
+            if !scanned.success {
+                ops.complete = false;
+                return;
             }
+            tokens := fmt_tokens(source, &scanned);
+            defer tokens.free();
+            if !fmt_pairs(&tokens) {
+                ops.complete = false;
+                return;
+            }
+            fmt_declarations(ops, tokens.view());
+            fmt_import_operators(ops, tokens.view(), path, std_directory, depth + 1);
+        }
     }
 }
 #public fmt_import_operators :: (
